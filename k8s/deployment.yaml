@@ -1,0 +1,51 @@
+# LeRobot Agent Console on VKE.
+#
+# The console image FROMs a LeRobot image, so this single container has both the
+# console (:8080) AND the full LeRobot environment. `kubectl exec` into the pod
+# gives you the same shell the browser console drives.
+#
+# Reminder: build/push the image with gzip (VKE node containerd 1.6.x rejects zstd).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lerobot-console
+  labels: { app: lerobot-console }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: lerobot-console }
+  template:
+    metadata:
+      labels: { app: lerobot-console }
+    spec:
+      containers:
+        - name: console
+          # Replace with your gzip-pushed console image tag.
+          image: iaas-us-cn-beijing.cr.volces.com/physicalai/lerobot-console:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: CONSOLE_WORKDIR, value: "/workspace/lerobot" }
+            - { name: CONSOLE_SHELL, value: "/bin/bash" }
+            - { name: HERMES_CHAT_SKILL, value: "robot_sft" }
+            # HERMES_HOME persists the chat session store + the Volcengine key the
+            # user enters in the UI (mount a PVC at this path to keep it across restarts).
+            - { name: HERMES_HOME, value: "/root/.hermes" }
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits: { cpu: "2", memory: "4Gi" }
+          readinessProbe:
+            httpGet: { path: /api/status, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/status, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          # volumeMounts:
+          #   - { name: hermes-home, mountPath: /root/.hermes }
+      # volumes:
+      #   - name: hermes-home
+      #     persistentVolumeClaim: { claimName: lerobot-console-hermes }
