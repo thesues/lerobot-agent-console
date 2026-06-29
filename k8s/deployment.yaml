@@ -27,7 +27,8 @@ spec:
             - { name: http, containerPort: 8080 }
           env:
             - { name: PORT, value: "8080" }
-            - { name: CONSOLE_WORKDIR, value: "/workspace/lerobot" }
+            # Console shell + agent cwd, and exported to all child processes.
+            - { name: LEROBOT_HOME, value: "/workspace/lerobot" }
             - { name: CONSOLE_SHELL, value: "/bin/bash" }
             - { name: HERMES_CHAT_SKILL, value: "robot_sft" }
             # HERMES_HOME persists the chat session store + the Volcengine key the
