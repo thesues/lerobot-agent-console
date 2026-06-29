@@ -64,6 +64,10 @@ CHAT_SKILL = os.environ.get("HERMES_CHAT_SKILL", "robot_sft")
 # quiet mode; we capture it on the first turn and `--resume` it afterwards.
 _SESSION_RE = re.compile(r"session_id:\s*(\S+)")
 _CHAT_STATE: dict[str, str | None] = {"session_id": None}
+# Tri-state cache for "is CHAT_SKILL installed?": None=unknown, True/False once checked.
+# Passing `-s <skill>` for an uninstalled skill makes hermes hard-error
+# ("Unknown skill(s): ...") instead of answering, so we only pass it when present.
+_SKILL_OK: list[bool | None] = [None]
 # Ark / Volcengine OpenAI-compatible endpoint and a sensible default model.
 DEFAULT_BASE_URL = os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
 DEFAULT_MODEL = os.environ.get("ARK_MODEL", "doubao-seed-2-0-pro-260215")
@@ -246,7 +250,26 @@ async def handle_term(request: web.Request) -> web.WebSocketResponse:
 # --------------------------------------------------------------------------- #
 # Chat websocket — bridge to the hermes agent                                 #
 # --------------------------------------------------------------------------- #
-def _build_chat_cmd(text: str, resume: str | None) -> list[str]:
+async def _skill_available() -> bool:
+    """Whether CHAT_SKILL is installed (cached). Empty CHAT_SKILL => disabled."""
+    if not CHAT_SKILL:
+        return False
+    if _SKILL_OK[0] is None:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                HERMES_BIN, "skills", "list",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await proc.communicate()
+            _SKILL_OK[0] = CHAT_SKILL.lower() in out.decode(errors="replace").lower()
+        except Exception:  # noqa: BLE001
+            _SKILL_OK[0] = False
+        if not _SKILL_OK[0]:
+            log.warning("hermes skill %r not installed — chat runs without it", CHAT_SKILL)
+    return bool(_SKILL_OK[0])
+
+
+def _build_chat_cmd(text: str, resume: str | None, with_skill: bool) -> list[str]:
     cmd = [
         HERMES_BIN, "chat",
         "-q", text,
@@ -254,17 +277,17 @@ def _build_chat_cmd(text: str, resume: str | None) -> list[str]:
     ]
     if resume:
         cmd += ["--resume", resume]  # carry context across turns
-    if CHAT_SKILL:
+    if with_skill and CHAT_SKILL:
         cmd += ["-s", CHAT_SKILL]
     return cmd
 
 
-async def _spawn_hermes(text: str, resume: str | None) -> tuple[int, str, str]:
+async def _spawn_hermes(text: str, resume: str | None, with_skill: bool) -> tuple[int, str, str]:
     env = dict(os.environ)
     env["HERMES_ACCEPT_HOOKS"] = "1"
     env.setdefault("NO_COLOR", "1")
     proc = await asyncio.create_subprocess_exec(
-        *_build_chat_cmd(text, resume), cwd=WORKDIR, env=env,
+        *_build_chat_cmd(text, resume, with_skill), cwd=WORKDIR, env=env,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     out, err = await proc.communicate()
@@ -278,16 +301,23 @@ async def _run_hermes_turn(ws: web.WebSocketResponse, text: str) -> None:
 
     await ws.send_json({"type": "start"})
     resume = _CHAT_STATE["session_id"]
+    with_skill = await _skill_available()
     try:
-        rc, out, err = await _spawn_hermes(text, resume)
+        rc, out, err = await _spawn_hermes(text, resume, with_skill)
     except FileNotFoundError:
         await ws.send_json({"type": "error", "error": f"hermes not found ({HERMES_BIN})"})
         return
 
+    # Skill vanished between check and run (or list was stale) — retry without it.
+    if with_skill and "Unknown skill" in (out + err):
+        _SKILL_OK[0] = False
+        with_skill = False
+        rc, out, err = await _spawn_hermes(text, resume, False)
+
     # A stale/pruned session id can't be resumed — retry once as a fresh session.
     if resume and rc != 0 and "No session found" in (out + err):
         _CHAT_STATE["session_id"] = None
-        rc, out, err = await _spawn_hermes(text, None)
+        rc, out, err = await _spawn_hermes(text, None, with_skill)
 
     m = _SESSION_RE.search(err) or _SESSION_RE.search(out)
     if m:
