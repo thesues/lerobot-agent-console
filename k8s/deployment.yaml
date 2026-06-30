@@ -40,6 +40,11 @@ spec:
             # is lerobot's own deprecated cache var, which lerobot rejects if set).
             - { name: CONSOLE_WORKDIR, value: "/lerobot" }
             - { name: CONSOLE_SHELL, value: "/bin/bash" }
+            # The base image bakes HOME=/home/user_lerobot (700, owned by
+            # user_lerobot); as root (DAC_OVERRIDE dropped in-container) that dir
+            # is unreadable -> "Home directory not accessible: Permission denied".
+            # Point HOME at the writable, persistent PVC instead.
+            - { name: HOME, value: "/opt/data" }
             - { name: HERMES_CHAT_SKILL, value: "robot_sft" }
             - { name: HERMES_HOME, value: "/opt/data" }
             # Native TLS — console serves HTTPS directly from the mounted cert.
