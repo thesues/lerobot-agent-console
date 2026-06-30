@@ -1,5 +1,9 @@
 # Persists HERMES_HOME (/opt/data): the Ark api key the user enters in the UI,
 # chat sessions, and installed skills — so they survive pod restarts.
+#
+# NOTE (Volcengine VKE): there is no default StorageClass, and ESSD has a minimum
+# volume size (~20Gi) — a smaller/unset request fails to bind ("Invalid volume
+# size" / "no storage class is set"). Set storageClassName + >=20Gi explicitly.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -7,7 +11,7 @@ metadata:
   labels: { app: lerobot-console }
 spec:
   accessModes: ["ReadWriteOnce"]
+  storageClassName: ebs-essd      # `kubectl get storageclass` to see yours
   resources:
     requests:
-      storage: 2Gi
-  # storageClassName: ebs-ssd   # set to your VKE default/StorageClass if needed
+      storage: 20Gi
