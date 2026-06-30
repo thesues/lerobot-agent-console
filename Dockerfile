@@ -33,15 +33,20 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # --- slim hermes in an isolated venv (its pins would clash with lerobot/torch) ---
-# Installed from PyPI (the volces mirror via UV_DEFAULT_INDEX) — NO GitHub, so the
-# CN build pool doesn't need github.com. ACP extra only; no node/browser/messaging/
-# matrix/voice/web-search/mcp. Pin HERMES_VERSION for reproducible builds.
+# Installed from PyPI mirrors — NO GitHub, so the CN build pool doesn't need
+# github.com. The volces mirror LAGS (only up to 0.16.0), so add aliyun as an extra
+# index (it has the latest + is reachable from the CP pool, same host lerobot uses
+# for torch wheels) and let uv pick the best version across both indexes.
+# ACP extra only; no node/browser/messaging/matrix/voice/web-search/mcp.
 ARG HERMES_VERSION=0.17.0
+ARG HERMES_EXTRA_INDEX=https://mirrors.aliyun.com/pypi/simple/
 ENV HERMES_HOME=/opt/data \
     HERMES_DISABLE_LAZY_INSTALLS=1
 RUN command -v uv >/dev/null 2>&1 || python -m pip install --no-cache-dir uv \
     && uv venv /opt/hermes/.venv \
-    && VIRTUAL_ENV=/opt/hermes/.venv uv pip install --native-tls --no-cache-dir "hermes-agent[acp]==${HERMES_VERSION}" \
+    && VIRTUAL_ENV=/opt/hermes/.venv uv pip install --native-tls --no-cache-dir \
+         --extra-index-url "${HERMES_EXTRA_INDEX}" --index-strategy unsafe-best-match \
+         "hermes-agent[acp]==${HERMES_VERSION}" \
     && ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes \
     && hermes acp --check
 
