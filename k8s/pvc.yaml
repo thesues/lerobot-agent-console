@@ -1,0 +1,13 @@
+# Persists HERMES_HOME (/opt/data): the Ark api key the user enters in the UI,
+# chat sessions, and installed skills — so they survive pod restarts.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lerobot-console-hermes
+  labels: { app: lerobot-console }
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+  # storageClassName: ebs-ssd   # set to your VKE default/StorageClass if needed
