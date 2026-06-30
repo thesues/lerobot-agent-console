@@ -1,11 +1,22 @@
-# Public HTTPS via a Volcengine VKE ALB (L7). Annotation format verified against
-# this cluster's existing `alb`-class ingress (ingress.vke.volcengine.com/*).
+# OPTION B (alternative to the Caddy sidecar): public HTTPS via a Volcengine ALB
+# (L7), TLS terminating AT THE ALB. If you use this, DROP the caddy sidecar +
+# service-lb.yaml from the deployment (the ALB talks straight to console:8080).
+# Prefer the Caddy path (deployment.yaml + service-lb.yaml) for fully-automatic
+# certs from just a domain; use this when you want VKE-managed L7 / a 证书中心 cert.
+#
+# Annotation format verified against this cluster's existing `alb`-class ingress
+# (ingress.vke.volcengine.com/*).
 #
 # Prereqs:
 #   - the ALB ingress controller addon is installed (IngressClass `alb` exists)
-#   - an uploaded server certificate in Volcengine 证书中心 → put its id in
-#     `loadbalancer-cert-id` below (HTTPS terminates at the ALB)
 #   - the console Service (k8s/service.yaml, ClusterIP :8080) is applied
+#
+# Certificate: the VKE ALB controller auto-provisions a SYSTEM (self-signed)
+# certificate (see the `system-cert-hash` label it adds), so HTTPS works even
+# WITHOUT `loadbalancer-cert-id` — traffic is encrypted, but browsers show an
+# "untrusted certificate" warning (self-signed + domain mismatch). For a trusted
+# green-lock cert, upload your domain cert to Volcengine 证书中心 and set its id
+# in `loadbalancer-cert-id` below (and a matching `host:`).
 #
 # WebSocket: ALB (L7) supports it; the page is served over https so the frontend
 # dials wss:// automatically (term/chat/control/proxy all work).
@@ -22,8 +33,9 @@ metadata:
     # --- listener: HTTPS on 443 ---
     ingress.vke.volcengine.com/loadbalancer-protocol: https
     ingress.vke.volcengine.com/loadbalancer-port: "443"
-    # TLS server cert from Volcengine 证书中心 (REQUIRED for https). Set yours:
-    ingress.vke.volcengine.com/loadbalancer-cert-id: "<your-cert-id>"
+    # OPTIONAL: omit to use the ALB's auto system (self-signed) cert — HTTPS works
+    # but browsers warn. Uncomment + set a 证书中心 cert id for a trusted cert:
+    # ingress.vke.volcengine.com/loadbalancer-cert-id: "<your-cert-id>"
     # redirect plain HTTP:80 → HTTPS:443 (drop if you don't want a :80 listener)
     ingress.vke.volcengine.com/loadbalancer-redirect-protocol: https
     # --- backend + health check (must be the open /healthz, not /api/status) ---
@@ -39,16 +51,17 @@ metadata:
     ingress.vke.volcengine.com/loadbalancer-unhealthy-threshold: "3"
     ingress.vke.volcengine.com/loadbalancer-scheduler: wrr
     ingress.vke.volcengine.com/loadbalancer-pass-through: "true"
-    # Reuse an existing ALB instance instead of auto-creating a new one. Omit to
-    # let the controller create a fresh ALB. (This cluster already has one:)
-    # ingress.vke.volcengine.com/alb-instance-name: alb-kbchwphbss6s
+    # RECOMMENDED: pin YOUR OWN ALB instance so the public IP is STABLE. Without
+    # this the controller auto-creates a fresh ALB, and deleting/recreating the
+    # Ingress gives a NEW IP. (Per-deployment value — fill in your alb-xxxxx id.)
+    # ingress.vke.volcengine.com/alb-instance-name: alb-xxxxxxxx
 spec:
   ingressClassName: alb
   rules:
-    # Set your domain (the cert's CN/SAN must match). Use "*" host only if your
-    # cert/ALB allow it; a real domain is recommended for HTTPS.
-    - host: console.example.com
-      http:
+    # No host → matches any host, so you can hit the ALB by IP (with the system
+    # cert). For a trusted domain cert, add `host: console.example.com` here and
+    # point that domain's DNS at the ALB VIP.
+    - http:
         paths:
           - path: /
             pathType: Prefix

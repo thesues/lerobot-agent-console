@@ -1,9 +1,10 @@
 # LeRobot Agent Console on VKE.
 #
-# One container = console (:8080) + slim hermes + full LeRobot env. `kubectl exec`
-# into the pod gives you the same shell the browser console drives.
+# Pod = console (lerobot + slim hermes, :8080) + a Caddy sidecar that terminates
+# HTTPS with an auto Let's Encrypt cert and reverse-proxies to the console.
+# `kubectl exec` into the `console` container gives you the shell the UI drives.
 #
-# Reminder: build/push the image GZIP (VKE node containerd 1.6.x rejects zstd).
+# Reminder: build/push the console image GZIP (VKE node containerd 1.6.x rejects zstd).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -11,7 +12,7 @@ metadata:
   labels: { app: lerobot-console }
 spec:
   replicas: 1
-  strategy: { type: Recreate }     # single-writer PVC; never two pods at once
+  strategy: { type: Recreate }     # single-writer PVCs; never two pods at once
   selector:
     matchLabels: { app: lerobot-console }
   template:
@@ -50,6 +51,31 @@ spec:
             periodSeconds: 20
           volumeMounts:
             - { name: hermes-home, mountPath: /opt/data }
+
+        # --- auto-HTTPS sidecar (Caddy) ------------------------------------- #
+        - name: caddy
+          image: caddy:2-alpine
+          args: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+          env:
+            # Per-user: the domain whose DNS points at the LB, + ACME contact email.
+            - { name: CONSOLE_DOMAIN, value: "console.example.com" }
+            - { name: ACME_EMAIL, value: "admin@example.com" }
+          ports:
+            - { name: https, containerPort: 443 }
+            - { name: http, containerPort: 80 }    # ACME HTTP-01 + HTTP->HTTPS redirect
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+          volumeMounts:
+            - { name: caddy-config, mountPath: /etc/caddy }
+            - { name: caddy-data, mountPath: /data }      # issued certs persist here
+            - { name: caddy-state, mountPath: /config }
       volumes:
         - name: hermes-home
           persistentVolumeClaim: { claimName: lerobot-console-hermes }
+        - name: caddy-config
+          configMap: { name: lerobot-console-caddy }
+        - name: caddy-data
+          persistentVolumeClaim: { claimName: lerobot-console-caddy-data }
+        - name: caddy-state
+          emptyDir: {}

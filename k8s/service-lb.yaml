@@ -1,0 +1,26 @@
+# Public L4 LoadBalancer (Volcengine CLB) — TCP passthrough of 443 + 80 to the
+# Caddy sidecar, which terminates TLS. (TLS must NOT terminate at the LB here;
+# Caddy owns the cert. So this is plain L4, not an ALB/L7 ingress.)
+#
+# Point your domain's DNS (an A record) at this Service's public IP, set that
+# domain as CONSOLE_DOMAIN on the caddy container, and Caddy auto-issues the cert.
+#
+# 80 must stay open for the ACME HTTP-01 challenge + HTTP->HTTPS redirect.
+apiVersion: v1
+kind: Service
+metadata:
+  name: lerobot-console-lb
+  labels: { app: lerobot-console }
+  annotations:
+    service.beta.kubernetes.io/volcengine-loadbalancer-address-type: "internet"
+    # Per-deployment: a subnet in your cluster's VPC.
+    service.beta.kubernetes.io/volcengine-loadbalancer-subnet-id: "<your-subnet-id>"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Cluster
+  selector: { app: lerobot-console }
+  ports:
+    - { name: https, port: 443, targetPort: 443, protocol: TCP }
+    - { name: http,  port: 80,  targetPort: 80,  protocol: TCP }
+
+# (The in-cluster ClusterIP service for port-forward/debugging is in service.yaml.)

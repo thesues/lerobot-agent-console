@@ -1,0 +1,25 @@
+# Caddy config for the auto-HTTPS sidecar. The domain + ACME email come from env
+# (CONSOLE_DOMAIN / ACME_EMAIL on the caddy container), so this ConfigMap is the
+# same for every deployment — only the env differs per user.
+#
+# Caddy auto-provisions a Let's Encrypt cert for $CONSOLE_DOMAIN and renews it.
+# Requires: the domain's DNS points at the LB IP, and inbound 80/443 reachable
+# (HTTP-01 / TLS-ALPN-01 challenge). For accounts where inbound is blocked, switch
+# to a DNS-01 challenge (needs a Caddy build with the DNS-provider plugin + creds).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lerobot-console-caddy
+  labels: { app: lerobot-console }
+data:
+  Caddyfile: |
+    {
+        email {$ACME_EMAIL}
+    }
+
+    {$CONSOLE_DOMAIN} {
+        # Single-pod: the console is on localhost:8080. Caddy terminates TLS and
+        # transparently forwards HTTP + WebSocket (term/chat/control/proxy) + the
+        # Basic-auth Authorization header.
+        reverse_proxy localhost:8080
+    }
