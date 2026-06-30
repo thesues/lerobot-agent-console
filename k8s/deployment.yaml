@@ -55,9 +55,12 @@ spec:
               valueFrom: { secretKeyRef: { name: lerobot-console-auth, key: user } }
             - name: CONSOLE_PASSWORD
               valueFrom: { secretKeyRef: { name: lerobot-console-auth, key: password } }
+          # The console drives lerobot training/eval/inference in-pod, so it needs
+          # real compute + a GPU. requests==limits (Guaranteed QoS); the GPU is an
+          # all-or-nothing device — claiming 1 takes the whole card.
           resources:
-            requests: { cpu: "500m", memory: "1Gi" }
-            limits: { cpu: "2", memory: "4Gi" }
+            requests: { cpu: "16", memory: "128Gi", nvidia.com/gpu: "1" }
+            limits:   { cpu: "16", memory: "128Gi", nvidia.com/gpu: "1" }
           readinessProbe:
             httpGet: { path: /healthz, port: 8080, scheme: HTTPS }
             initialDelaySeconds: 5
