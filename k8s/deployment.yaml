@@ -36,7 +36,9 @@ spec:
             - { name: https, containerPort: 8080 }
           env:
             - { name: PORT, value: "8080" }
-            - { name: LEROBOT_HOME, value: "/lerobot" }
+            # The lerobot checkout in the base image (NOT named LEROBOT_HOME — that
+            # is lerobot's own deprecated cache var, which lerobot rejects if set).
+            - { name: CONSOLE_WORKDIR, value: "/lerobot" }
             - { name: CONSOLE_SHELL, value: "/bin/bash" }
             - { name: HERMES_CHAT_SKILL, value: "robot_sft" }
             - { name: HERMES_HOME, value: "/opt/data" }
