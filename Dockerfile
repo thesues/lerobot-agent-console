@@ -17,6 +17,11 @@
 ARG BASE_IMAGE=iaas-us-cn-beijing.cr.volces.com/physicalai/lerobot:00370ca7ffea5b3c8ecb05e098e910b9559ba6e7
 FROM ${BASE_IMAGE}
 
+# lerobot's Dockerfile.user ends with `USER user_lerobot` (non-root). The build
+# steps below need root (apt, /opt, pip into the venv), and the console runs as
+# root at runtime so it can write the HERMES_HOME PVC + drive PTY shells.
+USER root
+
 # CN-friendly PyPI mirror (matches the lerobot build). Override with --build-arg.
 ARG PIP_INDEX_URL=https://mirrors.volces.com/pypi/simple/
 ENV UV_DEFAULT_INDEX=${PIP_INDEX_URL} \
@@ -67,9 +72,10 @@ RUN mkdir -p "${HERMES_HOME}/skills" \
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh scripts/install_skill.sh
 
-# The console shell + agent operate from LEROBOT_HOME (exported to children).
+# The console shell + agent operate from LEROBOT_HOME (the lerobot checkout in the
+# base image is at /lerobot). Exported to children.
 ENV PORT=8080 \
-    LEROBOT_HOME=/workspace/lerobot \
+    LEROBOT_HOME=/lerobot \
     HERMES_CHAT_SKILL=robot_sft
 
 EXPOSE 8080

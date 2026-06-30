@@ -28,7 +28,7 @@ spec:
             - { name: http, containerPort: 8080 }
           env:
             - { name: PORT, value: "8080" }
-            - { name: LEROBOT_HOME, value: "/workspace/lerobot" }
+            - { name: LEROBOT_HOME, value: "/lerobot" }
             - { name: CONSOLE_SHELL, value: "/bin/bash" }
             - { name: HERMES_CHAT_SKILL, value: "robot_sft" }
             # hermes config (Ark key the user enters) + sessions + skills persist here.
