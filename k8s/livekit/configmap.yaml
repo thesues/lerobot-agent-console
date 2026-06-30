@@ -1,0 +1,23 @@
+# Self-hosted LiveKit SFU config. The Mac daemon (home robot) and the in-pod
+# controller both DIAL OUT to this SFU, which sidesteps home/cloud symmetric NAT —
+# so it works even on accounts where public *inbound* to the API server is blocked
+# (only the LiveKit CLB needs inbound, and that's a plain L4 CLB).
+#
+# CHANGE for production: rotate the key/secret (`livekit-server generate-keys`).
+# Format is `keys: { <api_key>: <api_secret> }`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: livekit-config
+  namespace: default
+  labels: { app: livekit }
+data:
+  config.yaml: |
+    port: 7880
+    log_level: info
+    rtc:
+      tcp_port: 7881
+      udp_port: 7882
+      use_external_ip: false   # public IP comes from --node-ip (the CLB IP), not STUN
+    keys:
+      devkey: lerobotlivekitsecret0123456789abcd

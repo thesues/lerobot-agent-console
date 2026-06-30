@@ -1,0 +1,31 @@
+# LiveKit SFU. --node-ip MUST be the livekit-clb PUBLIC IP (unknown until the CLB
+# is provisioned), so don't `kubectl apply` this raw — run scripts/deploy-livekit.sh
+# (it creates the CLB, waits for the IP, substitutes __NODE_IP__, then applies).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: livekit
+  namespace: default
+  labels: { app: livekit }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: livekit } }
+  template:
+    metadata: { labels: { app: livekit } }
+    spec:
+      containers:
+        - name: livekit
+          image: docker.m.daocloud.io/livekit/livekit-server:latest   # daocloud mirror (CN)
+          args: ["--config", "/etc/livekit/config.yaml", "--node-ip", "__NODE_IP__"]
+          ports:
+            - { containerPort: 7880 }
+            - { containerPort: 7881 }
+            - { containerPort: 7882, protocol: UDP }
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "1Gi" }
+          volumeMounts:
+            - { name: config, mountPath: /etc/livekit }
+      volumes:
+        - name: config
+          configMap: { name: livekit-config }

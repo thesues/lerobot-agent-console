@@ -1,0 +1,21 @@
+# Public L4 CLB for LiveKit — the home Mac daemon dials into this IP.
+# All 3 ports share ONE CLB / ONE public IP (LiveKit's ICE candidates all use
+# --node-ip, so TCP signaling, TCP RTC, and UDP media must share that IP).
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-clb
+  namespace: default
+  labels: { app: livekit }
+  annotations:
+    service.beta.kubernetes.io/volcengine-loadbalancer-address-type: "internet"
+    # CHANGE per cluster: a subnet in your cluster's VPC/zone.
+    service.beta.kubernetes.io/volcengine-loadbalancer-subnet-id: "<your-subnet-id>"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Cluster
+  selector: { app: livekit }
+  ports:
+    - { name: signal,  port: 7880, protocol: TCP, targetPort: 7880 }  # WS signaling
+    - { name: rtc-tcp, port: 7881, protocol: TCP, targetPort: 7881 }  # WebRTC over TCP (fallback)
+    - { name: rtc-udp, port: 7882, protocol: UDP, targetPort: 7882 }  # WebRTC media (primary)
