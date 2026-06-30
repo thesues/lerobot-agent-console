@@ -53,13 +53,14 @@ Environment knobs:
 
 ## The robot_sft skill (requirement f)
 
-Chat preloads the [`robot_sft`](https://github.com/thesues/robot_sft) skill so the
-agent knows the LeRobot SFT pipeline. It is **vendored into this repo** at
-`vendor/robot_sft/` (upstream commit in `vendor/robot_sft.SOURCE`), so neither the
-build nor a running pod needs GitHub: the Dockerfile drops it into
-`$HERMES_HOME/skills/` (hermes auto-discovers it) and bakes it into the seed; the
-entrypoint restores it into the PVC with a local copy. Re-vendor when upstream
-changes: `rm -rf vendor/robot_sft && git clone --depth 1 https://github.com/thesues/robot_sft vendor/robot_sft && rm -rf vendor/robot_sft/.git`.
+Chat preloads the `robot_sft` skill so the agent knows the LeRobot SFT pipeline.
+The skill lives **in this repo** at `vendor/robot_sft/` and is maintained here as a
+first-class part of the console — **edit it directly**. (It originated from
+[`thesues/robot_sft`](https://github.com/thesues/robot_sft); see
+`vendor/robot_sft.SOURCE` for that origin commit.) Neither the build nor a running
+pod needs GitHub: the Dockerfile drops it into `$HERMES_HOME/skills/` (hermes
+auto-discovers it) and bakes it into the seed; the entrypoint restores it into the
+PVC with a local copy.
 
 ## Build & deploy on VKE
 
