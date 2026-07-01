@@ -1,10 +1,10 @@
-# Public L4 LoadBalancer (Volcengine CLB) — forwards :443 straight to the console
-# (which terminates TLS itself, see deployment.yaml). Plain L4 passthrough; the
-# CLB does NOT terminate TLS, the console does.
+# Public L4 LoadBalancer (Volcengine CLB) — forwards :80 straight to the console
+# on :8080 (plain HTTP by default; see deployment.yaml). Plain L4 passthrough.
 #
-# Point users at https://<this LB's public IP>/ (self-signed cert → browser warns
-# once). Reachable on accounts where ALB HTTPS isn't (ALB needs a 证书中心 cert-id
-# that can't be created via kubectl); CLB inbound works (same path LiveKit uses).
+# Point users at http://<this LB's public IP>/ . Reachable on accounts where ALB
+# isn't (ALB HTTPS needs a 证书中心 cert-id that can't be created via kubectl); CLB
+# inbound works (same path LiveKit uses). For HTTPS, give the console a TLS cert
+# and change this listener to port 443 (see deployment.yaml header).
 apiVersion: v1
 kind: Service
 metadata:
@@ -19,4 +19,4 @@ spec:
   externalTrafficPolicy: Cluster
   selector: { app: lerobot-console }
   ports:
-    - { name: https, port: 443, targetPort: 8080, protocol: TCP }   # 443 -> console HTTPS :8080
+    - { name: http, port: 80, targetPort: 8080, protocol: TCP }   # 80 -> console HTTP :8080

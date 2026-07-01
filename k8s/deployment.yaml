@@ -1,17 +1,18 @@
 # LeRobot Agent Console on VKE.
 #
-# One container = console (lerobot + slim hermes) serving HTTPS natively (no TLS
-# sidecar). An L4 CLB forwards :443 straight to the console. `kubectl exec` into
-# the pod gives you the shell the UI drives.
+# One container = console (lerobot + slim hermes). By default it serves plain
+# HTTP on :8080; an L4 CLB forwards :80 straight to it. `kubectl exec` into the
+# pod gives you the shell the UI drives. The UI shows a small "未加密 (HTTP)"
+# warning whenever TLS is off.
 #
-# TLS: the console serves HTTPS itself from a mounted cert (CONSOLE_TLS_CERT/KEY).
-# Create a self-signed cert secret first (no domain needed; browser warns once):
+# Want HTTPS instead? The console can serve TLS natively — create a cert secret
+# and set the two env vars back (see the commented block below):
 #   openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
 #     -keyout tls.key -out tls.crt -subj "/CN=lerobot-console" \
 #     -addext "subjectAltName=IP:<your-clb-ip>,DNS:lerobot-console"
 #   kubectl create secret tls lerobot-console-tls --cert=tls.crt --key=tls.key
-# (The CLB IP isn't known until the Service exists; you can regenerate with the IP
-#  in SAN afterward, or just accept the name-mismatch warning — it's self-signed.)
+# then re-add CONSOLE_TLS_CERT/KEY + the tls volume/mount and flip the probes to
+# scheme: HTTPS and the Service to port 443.
 #
 # Reminder: build/push the console image GZIP (VKE node containerd 1.6.x rejects zstd).
 apiVersion: apps/v1
@@ -33,7 +34,7 @@ spec:
           image: iaas-us-cn-beijing.cr.volces.com/physicalai/lerobot-console:latest
           imagePullPolicy: IfNotPresent
           ports:
-            - { name: https, containerPort: 8080 }
+            - { name: http, containerPort: 8080 }
           env:
             - { name: PORT, value: "8080" }
             # The lerobot checkout in the base image (NOT named LEROBOT_HOME — that
@@ -47,9 +48,8 @@ spec:
             - { name: HOME, value: "/opt/data" }
             - { name: HERMES_CHAT_SKILL, value: "robot_sft" }
             - { name: HERMES_HOME, value: "/opt/data" }
-            # Native TLS — console serves HTTPS directly from the mounted cert.
-            - { name: CONSOLE_TLS_CERT, value: "/tls/tls.crt" }
-            - { name: CONSOLE_TLS_KEY,  value: "/tls/tls.key" }
+            # Default: plain HTTP (the UI shows a "未加密" warning). For HTTPS, mount
+            # a cert secret and set CONSOLE_TLS_CERT + CONSOLE_TLS_KEY (see header).
             # Single-user login (page-wide HTTP Basic). From the Secret.
             - name: CONSOLE_USER
               valueFrom: { secretKeyRef: { name: lerobot-console-auth, key: user } }
@@ -62,18 +62,15 @@ spec:
             requests: { cpu: "16", memory: "128Gi", nvidia.com/gpu: "1" }
             limits:   { cpu: "16", memory: "128Gi", nvidia.com/gpu: "1" }
           readinessProbe:
-            httpGet: { path: /healthz, port: 8080, scheme: HTTPS }
+            httpGet: { path: /healthz, port: 8080, scheme: HTTP }
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            httpGet: { path: /healthz, port: 8080, scheme: HTTPS }
+            httpGet: { path: /healthz, port: 8080, scheme: HTTP }
             initialDelaySeconds: 15
             periodSeconds: 20
           volumeMounts:
             - { name: hermes-home, mountPath: /opt/data }
-            - { name: tls, mountPath: /tls, readOnly: true }
       volumes:
         - name: hermes-home
           persistentVolumeClaim: { claimName: lerobot-console-hermes }
-        - name: tls
-          secret: { secretName: lerobot-console-tls }

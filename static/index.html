@@ -16,6 +16,7 @@
       <span class="brand-badge">Agent Console</span>
     </div>
     <div class="top-right">
+      <span class="http-warn" id="http-warn" hidden title="当前通过 HTTP 访问，流量未加密。生产环境建议在 CLB/证书中心前置 HTTPS，或给 console 配置 TLS 证书。">⚠ 未加密 (HTTP)</span>
       <span class="node-pill"><i class="dot dot-green"></i> <span id="node-label">console</span> · 已连接</span>
       <span class="avatar">d</span>
     </div>
@@ -116,16 +117,6 @@
       </div>
     </aside>
   </main>
-
-  <!-- single-session lock overlay (shown when console already open elsewhere) -->
-  <div class="session-mask" id="session-mask" hidden>
-    <div class="session-card">
-      <div class="ve-icon">🔒</div>
-      <h3 id="session-title">控制台已在其他窗口打开</h3>
-      <p id="session-desc">为避免冲突，这个控制台同一时间只允许一个窗口。</p>
-      <button class="btn-primary" id="session-takeover">在此窗口打开（断开其他）</button>
-    </div>
-  </div>
 
   <!-- Volcengine API key modal (first time chat is opened) -->
   <div class="modal-mask" id="key-modal" hidden>

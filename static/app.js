@@ -374,13 +374,14 @@
   function setTitle(t) { sessTitle.textContent = (t && t.trim()) || "新会话"; }
 
   function newSession() {
-    if (busy) return;
     toggleSessMenu(false);
-    wsSend({ type: "session_new" });          // server replies session_switched(fresh)
+    if (busy) stopTurn();                      // abandon any in-flight turn, then switch
+    wsSend({ type: "session_new" });           // server replies session_switched(fresh)
   }
   function loadSession(id, title) {
-    if (busy || id === curSession) { toggleSessMenu(false); return; }
+    if (id === curSession) { toggleSessMenu(false); return; }
     toggleSessMenu(false);
+    if (busy) stopTurn();                      // abandon any in-flight turn, then switch
     curSession = id; setTitle(title);          // optimistic; history streams in next
     wsSend({ type: "session_load", id });       // server replies history_start … history_done
   }
@@ -595,44 +596,20 @@
       chatReady = !!s.chat_ready;
       if (s.model) $("chat-model").textContent = s.model;
       $("chat-status").style.background = chatReady ? "" : "#c2c7d2";
+      // Small warning when the console is served over plain HTTP (unencrypted).
+      // Prefer the server's answer; fall back to the page protocol on older servers.
+      const insecure = s.secure === false || (s.secure === undefined && location.protocol !== "https:");
+      $("http-warn").hidden = !insecure;
     }).catch(() => {});
   }
 
-  /* --------------------------------------------- single-session presence lock */
-  const sessionMask = $("session-mask");
-  let controlWS, evicted = false;
-  function showMask(title, desc, canTakeover) {
-    $("session-title").textContent = title;
-    $("session-desc").textContent = desc;
-    $("session-takeover").hidden = !canTakeover;
-    sessionMask.hidden = false;
-  }
+  /* -------------------------------------------------------------- start up */
+  // No presence lock — multiple windows/users may be open at once.
   function startApp() {
     sessionActive = true;
-    sessionMask.hidden = true;
     TERM.start();
     if (!chatWS || chatWS.readyState > 1) connectChat();
     fetchStatus();
   }
-  function connectControl() {
-    controlWS = new WebSocket(wsURL("/ws/control"));
-    controlWS.onmessage = (e) => {
-      const m = JSON.parse(e.data);
-      if (m.type === "granted") { evicted = false; startApp(); }
-      else if (m.type === "denied") {
-        sessionActive = false;
-        showMask("控制台已在其他窗口打开", "为避免冲突，这个控制台同一时间只允许一个窗口。", true);
-      } else if (m.type === "evicted") {
-        evicted = true; sessionActive = false;
-        try { TERM.stop(); chatWS && chatWS.close(); } catch (_) {}
-        showMask("此会话已被接管", "你已在另一个窗口打开了控制台。", true);
-      }
-    };
-    controlWS.onclose = () => { if (!evicted) setTimeout(connectControl, 1500); };
-  }
-  $("session-takeover").onclick = () => {
-    if (controlWS && controlWS.readyState === 1) controlWS.send(JSON.stringify({ type: "takeover" }));
-    else { evicted = false; connectControl(); }
-  };
-  connectControl();
+  startApp();
 })();
