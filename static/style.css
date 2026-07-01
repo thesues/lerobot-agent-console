@@ -43,8 +43,6 @@ body {
 .http-warn[hidden] { display: none; }
 .node-pill { color: #4b5160; background: #f6f7f9; border: 1px solid var(--line);
   padding: 6px 12px; border-radius: 999px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
-.avatar { width: 32px; height: 32px; border-radius: 50%; background: #2b3040; color: #fff;
-  display: grid; place-items: center; font-weight: 700; }
 
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .dot-green { background: var(--green); box-shadow: 0 0 0 3px rgba(34,197,94,.18); }
