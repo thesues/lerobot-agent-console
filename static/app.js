@@ -347,7 +347,15 @@
   function finishTurn() {
     const txt = extractHtml(curText.trim());   // unwrap any ```html fence
     if (!txt) {
-      rm(curBubble);                 // tool-only turn: drop the empty answer bubble
+      // No final text. If the agent ran tools, show a subtle "done" marker so the
+      // turn doesn't look frozen; otherwise drop the empty bubble.
+      if (Object.keys(toolEls).length) {
+        curBubble.classList.remove("thinking");
+        curBubble.textContent = "（已完成）";
+        curBubble.style.color = "#8a90a0";
+      } else {
+        rm(curBubble);
+      }
     } else if (looksHtml(txt)) {
       // answer carries simple inline HTML (tables/lists) → render it in the bubble
       curBubble.classList.remove("thinking");
@@ -441,10 +449,15 @@
   // ----- history replay (session_load) -----
   let histAcc = null;  // { role, text } accumulator; consecutive same-role chunks merge
   function histStart() { clearChat(); setBusy(true); histAcc = null; }
+  // Server prepends a "[System] …\n\n" steering block to the first user message of a
+  // session; hermes stores it, so on history replay it must NOT show in the bubble.
+  function stripSystemPrefix(s) {
+    return s.replace(/^\s*\[System\][\s\S]*?\n\n/, "");
+  }
   function histFlush() {
     if (!histAcc) return;
     const { role, text } = histAcc; histAcc = null;
-    if (role === "user") { if (text.trim()) addMsg("user", text.trim()); return; }
+    if (role === "user") { const u = stripSystemPrefix(text).trim(); if (u) addMsg("user", u); return; }
     const t = extractHtml(text.trim());
     if (!t) return;
     if (looksHtml(t)) { const b = addMsg("bot", ""); b.classList.add("html-inline"); b.innerHTML = sanitizeHtml(t); }
