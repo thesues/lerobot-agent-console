@@ -77,6 +77,13 @@ AUTH_ENABLED = bool(AUTH_USER and AUTH_PASS)
 # L4 LB, or any cert. Unset => plain HTTP (handy for local dev).
 TLS_CERT = os.environ.get("CONSOLE_TLS_CERT") or ""
 TLS_KEY = os.environ.get("CONSOLE_TLS_KEY") or ""
+
+
+def _tls_enabled() -> bool:
+    """True when both cert + key are set and present → the console serves HTTPS."""
+    return bool(TLS_CERT and TLS_KEY and os.path.exists(TLS_CERT) and os.path.exists(TLS_KEY))
+
+
 # Skill to preload so the agent knows how to drive LeRobot SFT (requirement f).
 CHAT_SKILL = os.environ.get("HERMES_CHAT_SKILL", "robot_sft")
 
@@ -215,6 +222,7 @@ async def handle_status(_request: web.Request) -> web.Response:
     info = read_chat_config()
     info["skill"] = CHAT_SKILL
     info["workdir"] = WORKDIR
+    info["secure"] = _tls_enabled()   # the UI shows a small warning when this is false
     return web.json_response(info)
 
 
@@ -630,11 +638,17 @@ async def handle_chat(request: web.Request) -> web.WebSocketResponse:
                 # Interrupt the running turn; the prompt resolves with "cancelled".
                 await acp.cancel()
                 continue
-            busy = bool(turn["task"] and not turn["task"].done())
             if ptype in ("session_list", "session_new", "session_load", "session_delete"):
-                if busy:  # don't switch the active session mid-turn
-                    await ws.send_json({"type": "error", "error": "请先等当前回答结束"})
-                    continue
+                # session_list is read-only — safe to run while a turn streams (so the
+                # dropdown can open mid-answer). Creating/loading/deleting changes the
+                # active session, so first abandon any in-flight turn.
+                busy = bool(turn["task"] and not turn["task"].done())
+                if busy and ptype != "session_list":
+                    await acp.cancel()
+                    t = turn["task"]
+                    if t and not t.done():
+                        t.cancel()
+                    turn["task"] = None
                 try:
                     await _handle_session_op(ws, acp, ptype, payload)
                 except Exception as e:  # noqa: BLE001
@@ -839,7 +853,7 @@ async def _redirect_to_slash(request: web.Request) -> web.Response:
 
 
 # --------------------------------------------------------------------------- #
-# Auth (single-user HTTP Basic) + single-session lock                          #
+# Auth (single-user HTTP Basic) + presence channel (no lock)                   #
 # --------------------------------------------------------------------------- #
 async def handle_health(_request: web.Request) -> web.Response:
     return web.Response(text="ok")
@@ -868,50 +882,20 @@ async def auth_middleware(request: web.Request, handler):
 
 
 async def handle_control(request: web.Request) -> web.WebSocketResponse:
-    """Single-session presence lock: only one open console at a time.
+    """Presence channel — no lock.
 
-    The page opens this on load. The first holder is granted; a second open is
-    denied (can request takeover, which evicts the current holder).
+    Multiple windows/users may be open at once, so this just grants immediately
+    and holds the socket open. (Older UIs still open this on load; they now always
+    get 'granted' and are never denied/evicted.)
     """
     ws = web.WebSocketResponse(heartbeat=20)
     await ws.prepare(request)
-    app = request.app
-
-    def occupied() -> bool:
-        cur = app.get("session_ws")
-        return cur is not None and cur is not ws and not cur.closed
-
-    async def grant() -> None:
-        app["session_ws"] = ws
-        await ws.send_json({"type": "granted"})
-
-    if occupied():
-        await ws.send_json({"type": "denied"})
-    else:
-        await grant()
-
+    await ws.send_json({"type": "granted"})
     try:
         async for msg in ws:
-            if msg.type != WSMsgType.TEXT:
-                if msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
-                    break
-                continue
-            try:
-                d = json.loads(msg.data)
-            except json.JSONDecodeError:
-                continue
-            if d.get("type") == "takeover":
-                old = app.get("session_ws")
-                if old is not None and old is not ws and not old.closed:
-                    try:
-                        await old.send_json({"type": "evicted"})
-                        await old.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-                await grant()
+            if msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                break
     finally:
-        if app.get("session_ws") is ws:
-            app["session_ws"] = None
         if not ws.closed:
             await ws.close()
     return ws
@@ -949,7 +933,6 @@ async def _on_cleanup(app: web.Application) -> None:
 
 def build_app() -> web.Application:
     app = web.Application(middlewares=[auth_middleware])
-    app["session_ws"] = None
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
     app.router.add_get("/", handle_index)
@@ -968,7 +951,7 @@ def build_app() -> web.Application:
 
 def main() -> None:
     ssl_ctx = None
-    if TLS_CERT and TLS_KEY and os.path.exists(TLS_CERT) and os.path.exists(TLS_KEY):
+    if _tls_enabled():
         ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ssl_ctx.load_cert_chain(TLS_CERT, TLS_KEY)
     scheme = "https" if ssl_ctx else "http"
@@ -978,8 +961,9 @@ def main() -> None:
         log.info("auth: single-user HTTP Basic ENABLED (user=%s)", AUTH_USER)
     else:
         log.warning("auth: DISABLED — set CONSOLE_USER + CONSOLE_PASSWORD to protect the console")
-    if not ssl_ctx and (TLS_CERT or TLS_KEY):
-        log.warning("TLS requested but cert/key missing (%s / %s) — serving plain HTTP", TLS_CERT, TLS_KEY)
+    if not ssl_ctx:
+        log.warning("serving plain HTTP (no TLS) — traffic is UNENCRYPTED. Set CONSOLE_TLS_CERT + "
+                    "CONSOLE_TLS_KEY to serve HTTPS.")
     web.run_app(build_app(), host="0.0.0.0", port=PORT, ssl_context=ssl_ctx, access_log=None)
 
 
