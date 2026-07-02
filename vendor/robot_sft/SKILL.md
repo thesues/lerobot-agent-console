@@ -275,10 +275,81 @@ picks checkpoints, it does not prove real-robot success.
 - `scripts/monitor_server.py` — TensorBoard-like FastAPI dashboard (dependency-free
   `<canvas>`): plots the training-loss + eval curves, shows the watchdog's `assessment`
   verdict, and galleries any images found under `eval/artifacts/`.
+- `lerobot.datasets.FsspecLeRobotDataset` (in the lerobot package, not this skill) —
+  stream a LeRobot v3.0 dataset from object storage (Volcengine **TOS** via `tosfs`, or S3)
+  without downloading it. See "Streaming a dataset from TOS" below.
 
 Run scripts with `python` (or `uv run python` from /lerobot when they import lerobot —
 that's only `offline_eval.py`; the rest are stdlib). Scripts are designed to be executed
 for their output, not read into context — only open one if you need to adapt it.
+
+## Streaming a dataset from TOS (object storage)
+
+For a dataset too large to download, stream it. lerobot's stock `StreamingLeRobotDataset`
+streams only from the **HF Hub** or a **local dir** — not from `tos://`/`s3://` (it
+Path-mangles the URL and passes no credentials). So for a dataset on **Volcengine TOS**,
+use **`lerobot.datasets.FsspecLeRobotDataset`** (a `StreamingLeRobotDataset` subclass in
+the lerobot package), which adds the three fsspec seams: metadata is mirrored locally (the
+tiny `meta/`), low-dim parquet streams via `fsspec`, and video mp4s are decoded from
+short-lived **presigned HTTPS URLs** (torchcodec range-reads only the bytes it needs).
+Validated live against TOS on `izuluaga/finish_sandwich` (v3.0, 80 eps / 70k frames).
+
+**1. Put a dataset on TOS** (LeRobot **v3.0** layout — `meta/ data/ videos/`). Upload with
+`tosutil` (already configured on the box):
+```bash
+# download from the Hub (or record with lerobot-record), then push the tree to TOS:
+tosutil cp <local_dataset_dir> tos://<bucket>/<prefix>/<name> -r -flat -f
+# verify it kept the LeRobot tree:
+tosutil ls tos://<bucket>/<prefix>/<name>/ -s | grep -E 'meta/info.json|data/.*parquet|videos/'
+```
+
+**2. Credentials.** Pass **real** TOS Access Key / Secret Key — via env vars, never
+hardcoded:
+```bash
+export TOS_ACCESS_KEY=<AKLT...>   TOS_SECRET_KEY=<...>
+export TOS_ENDPOINT=https://tos-cn-beijing.volces.com   TOS_REGION=cn-beijing
+```
+⚠️ **The `~/.tosutilconfig` ak/sk are OBFUSCATED** (they don't start with `AKLT…` and 403
+if used raw) — `tosutil` de-obfuscates them internally, but the Python SDK / `tosfs` do NOT.
+Use the plaintext AK/SK from the Volcengine console / IAM (the pod's `~/.zshrc` exports them).
+
+**3. Install the TOS fsspec impl** (once, in the lerobot venv):
+```bash
+cd /lerobot && uv pip install --native-tls tosfs   # registers the tos:// protocol (+ tos SDK)
+```
+
+**4. Open it** — build the `tos://` URL yourself, pass creds via `storage_options` (same as
+`fsspec.filesystem("tos", …)`); `repo_id` is optional (auto-derived from the URL):
+```python
+import os
+from lerobot.datasets import FsspecLeRobotDataset
+
+ds = FsspecLeRobotDataset(
+    "tos://dongmao-test/lerobot-datasets/finish_sandwich",
+    storage_options={
+        "key": os.environ["TOS_ACCESS_KEY"], "secret": os.environ["TOS_SECRET_KEY"],
+        "endpoint": "https://tos-cn-beijing.volces.com", "region": "cn-beijing",
+    },
+    episodes=[0, 3, 17],           # held-out subset; omit for the whole dataset
+)
+print(ds.num_frames, ds.num_episodes, ds.fps, ds.meta.camera_keys)
+for item in ds:                    # IterableDataset: iterate, no ds[i]
+    item["observation.images.front"]   # (C,H,W); item["observation.state"], item["action"]
+    break
+```
+
+**Scope:** `FsspecLeRobotDataset` is a **standalone reader** — for dataset exploration,
+`offline_eval`, or a custom training loop. `lerobot-train --dataset.streaming` itself only
+streams from the **Hub/local**, so to run `lerobot-train` on a TOS dataset either
+`tosutil cp tos://… /opt/data/datasets/<name> -r` it down first and pass `--dataset.root`,
+or drive training from a loop over `FsspecLeRobotDataset`.
+
+Notes: it's an **`IterableDataset`** (buffer-shuffled, no random index) — same trade-offs as
+`StreamingLeRobotDataset` (lessons_learned #13 caveats). Video decode needs **torchcodec**
+(present in the lerobot image; missing on a bare Mac). For non-TOS backends (S3/GCS) pass a
+generic `url=` + `storage_options=` instead of `from_tos`; presigning falls back to fsspec
+`.sign()`. Validated end-to-end against a `file://` mirror of `izuluaga/finish_sandwich`
+(v3.0, 80 eps / 70k frames): metadata mirror + parquet streaming + episode filter all work.
 
 ## Style
 
