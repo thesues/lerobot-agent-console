@@ -92,9 +92,9 @@ CHAT_SKILL = os.environ.get("HERMES_CHAT_SKILL", "robot_sft")
 CHAT_DIRECTIVE = (
     "[System] 请用简洁的 Markdown 作答：用 **加粗**、`行内代码`、有序/无序列表、表格等呈现"
     "结构化信息；代码或命令放进 ``` 代码块。不要输出完整 HTML 页面或 <script>/<style>。\n"
-    "运行环境：lerobot 源码在 `/lerobot`，Python 依赖由 uv 管理（虚拟环境 `/lerobot/.venv`）。"
-    "在终端执行 lerobot / python 相关命令前，先激活虚拟环境："
-    "`source /lerobot/.venv/bin/activate`；或在 `/lerobot` 目录下用 `uv run <命令>` 前缀。\n\n"
+    "运行环境：lerobot 源码在 `/lerobot`，其 uv 虚拟环境（`/lerobot/.venv`）已在 PATH 上——"
+    "直接用 `python` / `lerobot-*` 命令即可，无需激活。若确需 `uv run`，务必加 `--no-sync`"
+    "（否则 uv 会尝试联网重新同步依赖，很慢）。\n\n"
 )
 
 # Ark / Volcengine OpenAI-compatible endpoint and a sensible default model.
