@@ -79,9 +79,13 @@ pip-installing optional tools at runtime.
 ```bash
 # Separate pipeline. Push gzip (VKE node containerd 1.6.x rejects zstd). The
 # lerobot base images are gzip, so the console image is gzip too.
+# CONSOLE_COMMIT makes the UI's "更新说明" version banner show this build's commit; tag the
+# image by the same commit. (The lerobot commit comes from BASE_IMAGE's tag automatically.)
+COMMIT=$(git rev-parse HEAD)
 docker buildx build \
   --build-arg BASE_IMAGE=iaas-us-cn-beijing.cr.volces.com/physicalai/lerobot:f5bc4aef835d4b7b2013a103434916976d81e078 \
-  --output type=image,name=<registry>/lerobot-console:<tag>,push=true,compression=gzip,oci-mediatypes=true \
+  --build-arg CONSOLE_COMMIT=$COMMIT \
+  --output type=image,name=iaas-us-cn-beijing.cr.volces.com/physicalai/lerobot-agent-console:$COMMIT,push=true,compression=gzip,oci-mediatypes=true \
   .
 
 # One-time: login secret + a self-signed TLS cert + the hermes PVC

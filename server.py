@@ -232,14 +232,7 @@ def _versions() -> dict:
     img = os.environ.get("LEROBOT_IMAGE", "")
     tag = img.rsplit(":", 1)[-1] if ":" in img else ""
     lerobot = "" if "/" in tag else tag  # guard: a host:port ":" with no tag
-    # console commit: written by the post-commit hook into static/version.txt (baked into the
-    # image via `COPY static`); the CONSOLE_COMMIT build-arg env is a fallback for CI builds.
-    console = ""
-    try:
-        console = (STATIC / "version.txt").read_text(encoding="utf-8").strip()
-    except Exception:
-        pass
-    console = console or os.environ.get("CONSOLE_COMMIT", "").strip()
+    console = os.environ.get("CONSOLE_COMMIT", "").strip()  # from --build-arg CONSOLE_COMMIT
     return {"lerobot": lerobot or "unknown", "console": console or "unknown"}
 
 
