@@ -708,8 +708,6 @@
     TERM.start();
     if (!chatWS || chatWS.readyState > 1) connectChat();
     fetchStatus();
-    // Default landing page: open the Release Notes as a tab.
-    addDocTab("welcome", "更新说明", "/static/release_note.md");
   }
   startApp();
 })();
