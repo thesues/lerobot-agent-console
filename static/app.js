@@ -172,6 +172,14 @@
 
   // A "doc" tab renders a markdown file (e.g. the Release Notes welcome page) into a
   // scrollable pane — no iframe, just fetch + a tiny markdown -> HTML pass.
+  // Links in chat/artifacts open in a NEW TAB — a plain <a> would navigate the whole
+  // single-page console away and lose the session. Also harden with rel=noopener.
+  DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    if (node.tagName === "A" && node.getAttribute("href")) {
+      node.setAttribute("target", "_blank");
+      node.setAttribute("rel", "noopener noreferrer");
+    }
+  });
   // Render markdown (and any inline HTML the model emits) to safe HTML via marked + DOMPurify.
   function renderMD(src) {
     return DOMPurify.sanitize(marked.parse(src || "", { gfm: true, breaks: true }));
@@ -318,6 +326,9 @@
     curBubble.classList.add("thinking");
     curBubble.textContent = booting ? "正在启动 Agent" : "思考中";
   }
+  // The answer bubble (blinking while pending) must stay at the BOTTOM — reasoning
+  // and tool cards stack above it in arrival order. Re-append it after each new card.
+  function keepAnswerLast() { if (curBubble) body.appendChild(curBubble.closest(".msg")); }
   // Stream the agent's reasoning into its own collapsible 💭 bubble, placed
   // ABOVE the answer bubble. Expanded while streaming (so it's visible live),
   // collapsed when the turn ends. One thought bubble accumulates the whole turn.
@@ -328,12 +339,13 @@
       const wrap = document.createElement("div");
       wrap.className = "msg msg-bot";
       wrap.innerHTML = '<span class="msg-ava tool-ava">💭</span><div class="bubble tool-bubble think-bubble"></div>';
-      body.insertBefore(wrap, curBubble.closest(".msg"));   // reasoning sits above the answer
+      body.appendChild(wrap);                                // reasoning stacks in arrival order
       const bubble = wrap.querySelector(".tool-bubble");
       curThought = { bubble, refs: buildToolBubble(bubble), text: "" };
       curThought.refs.detail.hidden = false;                 // stream expanded
       curThought.refs.caret.textContent = "▾";
       curBubble.textContent = "";                            // drop the redundant "思考中" (blinking cursor stays)
+      keepAnswerLast();                                      // keep the blinking answer bubble at the bottom
     }
     curThought.text += text;
     curThought.refs.detail.textContent = curThought.text;
@@ -412,6 +424,7 @@
       body.appendChild(wrap);
       const bubble = wrap.querySelector(".tool-bubble");
       t = toolEls[id] = { el: bubble, refs: buildToolBubble(bubble), title: "" };
+      keepAnswerLast();                         // keep the blinking answer bubble at the bottom
     }
     if (u.title) t.title = u.title;             // tool_call has the title; updates may not
     setToolBubble(t.el, t.refs, t.title, u.status, u.detail);
@@ -479,9 +492,9 @@
     if (id === curSession) { toggleSessMenu(false); return; }
     toggleSessMenu(false);
     if (busy) stopTurn();                      // abandon any in-flight turn, then switch
-    curSession = id; setTitle(title);          // optimistic; history streams in next
-    wsSend({ type: "session_load", id });       // server replies history_start … history_done
-  }
+    setTitle(title);                           // optimistic title only; curSession is set when the
+    wsSend({ type: "session_load", id });       // server actually starts streaming (history_start).
+  }                                             // Setting it early left a stale guard that ate the 1st click.
   function deleteSession(id) {
     if (busy) return;
     wsSend({ type: "session_delete", id });
@@ -537,7 +550,7 @@
 
   // ----- history replay (session_load) -----
   let histAcc = null;  // { role, text } accumulator; consecutive same-role chunks merge
-  function histStart() { clearChat(); setBusy(true); histAcc = null; }
+  function histStart(id) { clearChat(); setBusy(true); histAcc = null; if (id) curSession = id; }
   // Server prepends a "[System] …\n\n" steering block to the first user message of a
   // session; hermes stores it, so on history replay it must NOT show in the bubble.
   function stripSystemPrefix(s) {
@@ -616,7 +629,7 @@
         case "sessions": renderSessions(m.items || [], m.current); break;
         case "session_switched": onSwitched(m.id, m.title, m.fresh); break;
         case "session_deleted": onDeleted(m.id); break;
-        case "history_start": histStart(); break;
+        case "history_start": histStart(m.id); break;
         case "hist": histChunk(m); break;
         case "history_done": histDone(); break;
       }
