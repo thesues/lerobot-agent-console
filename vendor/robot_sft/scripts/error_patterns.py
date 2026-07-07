@@ -24,6 +24,12 @@ FATAL = [
      "gated/unauthorized Hub model or dataset",
      "Accept the repo's license on huggingface.co and `hf auth login` (pi0's PaliGemma and "
      "some bases are gated), or point at a local path."),
+    (r"huggingface\.co.*(Max retries exceeded|Connection (refused|reset|aborted|timed out)|"
+     r"Failed to establish|NewConnectionError)|Max retries exceeded.*huggingface|"
+     r"Could not reach.*huggingface|Temporary failure in name resolution.*huggingface",
+     "can't reach huggingface.co (firewall)",
+     "The pod's firewall blocks huggingface.co. `export HF_ENDPOINT=https://hf-mirror.com` "
+     "and re-launch. Not a transient error; it recurs until the mirror is set."),
     (r"Output directory .* already exists and resume is (False|false)",
      "output_dir exists but --resume not set",
      "Re-launch with --resume=true --config_path=<output_dir>/checkpoints/last/"

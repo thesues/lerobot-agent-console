@@ -38,6 +38,11 @@ distilled list of the failure modes above, each with the concrete check that pre
   checkpoints or datasets into `/lerobot` or `/tmp`.
 - Outside the pod both default to the current directory (`.robot_sft/`); override with
   `$ROBOT_SFT_HOME` / `--output-dir`.
+- **HuggingFace Hub downloads go through a mirror — the pod is behind a firewall that blocks
+  `huggingface.co`.** Just `export HF_ENDPOINT=https://hf-mirror.com` at session start;
+  every Hub pull (datasets via `--dataset.repo_id`, pretrained backbones via `--policy.path`
+  — pi0's PaliGemma, SmolVLA, …, and the `hf` CLI) then goes through the mirror. Gated repos
+  still need `hf auth login`. TOS/`FsspecLeRobotDataset` datasets don't touch the Hub.
 
 ## Core model: Session → Stages → Runs
 
