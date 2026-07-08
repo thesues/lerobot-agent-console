@@ -91,7 +91,11 @@ This is your top-level algorithm. Follow it; let the sub-agents do the depth.
 3. **Gate on hard errors.** Stage a stops the whole session if the request needs a
    training path lerobot doesn't provide. Stage d stops if hardware is insufficient and
    can't be remediated. Surface the blocker to the user; do not silently continue.
-4. **Hand off to the watchdog** for the train stage and keep the user informed via the
+4. **Confirm the plan before training (HARD GATE).** After stage d (plan + green preflight)
+   and BEFORE launching stage e, summarize the final training parameters and ask the user
+   to confirm or adjust — wait for explicit go-ahead. See stage **d★**. Never start a run
+   on assumptions.
+5. **Hand off to the watchdog** for the train stage and keep the user informed via the
    dashboard, not a wall of CLI text.
 
 Keep a visible checklist in your reply so the user can see where the session is:
@@ -101,6 +105,7 @@ Keep a visible checklist in your reply so the user can see where the session is:
 - [ ] b. dataset explore
 - [ ] c. train/eval episode split (conversion if needed)
 - [ ] d. training plan + hardware
+- [ ] d★. confirm parameters with the user (gate before GPU-hours)
 - [ ] e. train under watchdog
 ```
 
@@ -172,6 +177,25 @@ initial batch from a policy-family heuristic *before* seeing real usage. preflig
 `--batch_size` to ~85% of memory). Apply it, **re-run preflight to confirm it fits**, then
 recompute `--steps`/`--save_freq` for the new batch (and consider scaling LR). A bigger
 batch that fits = higher GPU utilization and a faster run (lessons_learned #16).
+
+### d★. Confirm the plan with the user  (HARD GATE — before any real GPU-hours)
+Once preflight is green and the batch is right-sized, **do NOT launch training silently.**
+This is the last cheap checkpoint before committing GPU-hours, so **always** present a concise
+**training summary** and get the user's **explicit go-ahead** first. Summarize the final,
+about-to-run values from `training_plan.json` (not the defaults) — at minimum:
+- **dataset** (`repo_id` / `root`) + **train / eval episode counts**
+- **policy** (fresh `type`, or the finetuned `path`) and the key camera/state features
+- **steps** (and the epochs + `steps_per_epoch` they came from), **batch_size**, **num_workers**
+- **learning rate** (if set), **save_freq** and the derived **eval cadence** (≈ once per N min/h)
+- **output_dir**, the **GPU(s)** chosen, and the checkpoint **disk budget** `(steps/save_freq) × ckpt_size`
+- the exact **launch command** that will run
+
+Then **ask the user to confirm or change it, and WAIT** — use `AskUserQuestion` if your runtime
+has it (e.g. options 「开始训练」/「修改参数」/「取消」), otherwise ask in plain chat and block on the
+reply. If they want changes, re-run `plan_training.py` with the new args (and re-run
+`preflight.py` when a batch/memory-affecting flag changed), then **re-summarize and re-ask**.
+Only advance to stage e after an explicit "go". Never start a run on assumptions — this
+summary-and-confirm step is mandatory, even if the plan looks obviously fine.
 
 ### e. Train under watchdog + periodic eval  (the long pole)
 Launch training and the monitors. Three background processes, all communicating via files:
