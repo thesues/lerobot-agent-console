@@ -123,31 +123,6 @@ def _hermes_config_path() -> Path:
     return _hermes_home() / "config.yaml"
 
 
-def _sql_delete_session(sid: str) -> None:
-    """FALLBACK delete when `hermes sessions delete` is unavailable. Prefer the CLI
-    (HermesACP.delete_session) — it's schema-aware and also cleans the FTS index; this
-    raw delete only removes the sessions+messages rows (leaves FTS entries orphaned).
-
-    hermes keeps sessions+messages in HERMES_HOME/state.db (WAL mode). We open a
-    short-timeout connection and remove the rows. NOTE: a running `hermes acp` server
-    caches session/list in memory and will NOT reflect this until it restarts — callers
-    filter deleted ids from the list (HermesACP._deleted) to hide them immediately.
-    """
-    import sqlite3
-
-    db = _hermes_home() / "state.db"
-    if not db.exists():
-        return
-    con = sqlite3.connect(str(db), timeout=5)
-    try:
-        con.execute("PRAGMA busy_timeout=5000")
-        con.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
-        con.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-        con.commit()
-    finally:
-        con.close()
-
-
 def _parse_model_block(text: str) -> dict:
     """Extract model.{default,base_url,api_key} from config.yaml WITHOUT pyyaml.
 
@@ -537,25 +512,20 @@ class HermesACP:
         self._directive_sent.add(sid)  # existing history → never inject the directive
 
     async def delete_session(self, sid: str) -> None:
-        # Prefer hermes' own CLI delete — it's schema-aware (also cleans the FTS index +
-        # related tables that a raw DELETE would orphan). Fall back to raw SQL if it fails.
-        deleted = False
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                HERMES_BIN, "sessions", "delete", sid, "--yes",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        # Delete via hermes' own CLI (schema-aware: also cleans the FTS index + related
+        # tables). This is the supported path — no SQL fallback; a failure is surfaced.
+        proc = await asyncio.create_subprocess_exec(
+            HERMES_BIN, "sessions", "delete", sid, "--yes",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"`hermes sessions delete {sid}` failed (rc={proc.returncode}): "
+                f"{out.decode(errors='replace')[:400]}"
             )
-            out, _ = await proc.communicate()
-            deleted = proc.returncode == 0
-            if not deleted:
-                log.warning("`hermes sessions delete %s` rc=%s: %s", sid, proc.returncode,
-                            out.decode(errors="replace")[:300])
-        except OSError as e:  # noqa: BLE001
-            log.warning("`hermes sessions delete %s` errored: %s", sid, e)
-        if not deleted:
-            await asyncio.to_thread(_sql_delete_session, sid)
-        # The running `hermes acp` server caches session/list in memory and won't see the
-        # delete (whether CLI or SQL) until it restarts, so still filter it from the list.
+        # The running `hermes acp` server caches session/list in memory and won't reflect
+        # the delete until it restarts, so still filter it from the list.
         self._deleted.add(sid)
         self._directive_sent.discard(sid)
         if self.session_id == sid:
