@@ -88,15 +88,16 @@ RUN python -c "import aiohttp, yaml, ast; ast.parse(open('/opt/agent-console/ser
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh scripts/install_skill.sh
 
-# The console shell + agent operate from LEROBOT_HOME (the lerobot checkout in the
-# base image is at /lerobot). Exported to children.
+# The console shell + agent operate from CONSOLE_WORKDIR (the lerobot checkout in the
+# base image is at /lerobot). Do NOT set LEROBOT_HOME — that is lerobot's own reserved
+# cache var and lerobot 0.6.x HARD-ERRORS if it's set; server.py reads CONSOLE_WORKDIR.
 # LEROBOT_IMAGE / CONSOLE_COMMIT are surfaced by the UI's "更新说明" button so you can see
 # exactly which versions are deployed (LEROBOT_IMAGE's tag = the lerobot commit; pass
 # --build-arg CONSOLE_COMMIT=$(git rev-parse HEAD) to fill in this console's commit).
 ARG BASE_IMAGE
 ARG CONSOLE_COMMIT=""
 ENV PORT=8080 \
-    LEROBOT_HOME=/lerobot \
+    CONSOLE_WORKDIR=/lerobot \
     HERMES_CHAT_SKILL=robot_sft \
     LEROBOT_IMAGE=${BASE_IMAGE} \
     CONSOLE_COMMIT=${CONSOLE_COMMIT}
