@@ -8,24 +8,24 @@
 
 ## 一、对 LeRobot 的能力增强
 
-### 1. 直接访问 TOS 上的数据集 · `fsspec_dataset.py`
+### 1. 直接访问 TOS 上的数据集 · `StreamingTOSRobotDataset`
 
-传统流程里，训练前要把整个数据集从对象存储**下载到本地磁盘**——大数据集又慢又占空间。我们新增了 `FsspecLeRobotDataset`，**无需下载，直接以流式方式**读取对象存储上的 LeRobot 数据集。
+传统流程里，训练前要把整个数据集从对象存储**下载到本地磁盘**——大数据集又慢又占空间。我们新增了 `StreamingTOSRobotDataset`（`StreamingLeRobotDataset` 的子类），**无需下载，直接以流式方式**读取火山 **TOS** 上的 LeRobot 数据集。
 
 - **面向 v3 格式**：适配 LeRobot **v3.0** 数据集布局（`meta/` + `data/*/*.parquet` + `videos/`）。
-- **任意 fsspec 后端**：火山 **TOS**、S3、GCS 等都支持；只要给出 `tos://bucket/prefix` 这样的 URL 和访问凭证。
-- **按需读取，不落盘**：元数据(meta) 只镜像几 MB 到本地；低维数据(parquet) 流式拉取；视频经 fsspec 直接解码，全程不写本地磁盘。
-- **即插即用**：它是 `StreamingLeRobotDataset` 的子类，可直接喂给 `lerobot-train` 与评估流程。
+- **凭证走环境变量**：TOS AK/SK 从环境读取（`TOS_ACCESS_KEY` / `TOS_SECRET_KEY`，可选 `TOS_ENDPOINT` / `TOS_REGION`），只给 `tos://bucket/prefix` URL 即可，无需再手写 `storage_options`。
+- **按需读取，不落盘**：元数据(meta) 只镜像几 MB 到本地；低维数据(parquet) 流式拉取；视频经 fsspec 直接解码（`tosfs` 已内置于镜像），全程不写本地磁盘。
+- **多视频文件对齐修复**：修复了 `StreamingLeRobotDataset` 的一个上游 bug——视频时间戳按「全局 index/fps」计算，数据集拆成多个 `.mp4` 后靠后的 episode 会解码到越界/冻结的帧；现改为按视频文件相对时间戳，已逐帧比对验证与非流式读取**完全一致**。
+- **即插即用**：它是 `StreamingLeRobotDataset` 的子类，可喂给自定义训练循环 / 数据探查 / 离线评估。
 
 ```python
-from lerobot.datasets import FsspecLeRobotDataset
+from lerobot.datasets import StreamingTOSRobotDataset   # 凭证从环境变量读取
 
-ds = FsspecLeRobotDataset(
+ds = StreamingTOSRobotDataset(
     "tos://my-bucket/lerobot-datasets/finish_sandwich",
-    storage_options={"key": ..., "secret": ..., "endpoint": "https://tos-cn-beijing.volces.com", "region": "cn-beijing"},
     episodes=[0, 3, 17],   # 可选：只取部分 episode，做 train/eval 切分
 )
-for item in ds:
+for item in ds:            # IterableDataset：迭代取，不支持 ds[i]
     item["observation.images.front"]   # (C, H, W)，帧直接来自 TOS
     item["observation.state"]; item["action"]
     break

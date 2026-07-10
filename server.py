@@ -466,8 +466,12 @@ class HermesACP:
         env = dict(os.environ)
         env["HERMES_ACCEPT_HOOKS"] = "1"
         env.setdefault("NO_COLOR", "1")
+        # `--skills <name>` (global flag, before the acp subcommand) PINS the skill into every
+        # session's context so the agent always sees it — instead of only auto-discovering it
+        # when a message happens to match its description. CHAT_SKILL defaults to robot_sft.
+        skill_args = ["--skills", CHAT_SKILL] if CHAT_SKILL else []
         self.proc = await asyncio.create_subprocess_exec(
-            HERMES_BIN, "acp", "--accept-hooks",
+            HERMES_BIN, *skill_args, "acp", "--accept-hooks",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL, cwd=WORKDIR, env=env,
         )
