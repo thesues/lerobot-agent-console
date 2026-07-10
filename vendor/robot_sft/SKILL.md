@@ -164,23 +164,33 @@ Two responsibilities:
   tooling, then re-verify `meta/info.json`.
 - **Train/eval split (always — unless the user opts out):** hold out a fraction of
   episodes as an eval set *before* training, so the training set does not contain them.
-  Real-robot data has no simulator, so in-loop eval is off (`--eval_freq=0`) and post-hoc
+  Real-robot data has no simulator, so in-loop eval is off (`--env_eval_freq=0`) and post-hoc
   offline eval on **held-out episodes** is the only honest generalization signal
   (lessons_learned #13). lerobot subsets episodes natively (`--dataset.episodes='[...]'`),
   so **no physical dataset copy is needed** — run `python scripts/split_train_eval.py
   --dataset-repo-id <id> [--dataset-root <dir>] --out <session>/preprocess.json`
   (default ≈10% holdout, min 1, seeded/deterministic). Verify the two id lists are
   disjoint and in range.
-  - **TOS datasets** split the same way — purely by **episode list**, no physical split:
-    pass `episodes=[...]` to `StreamingTOSRobotDataset` (train vs eval subsets), just as
-    `--dataset.episodes` subsets a local/Hub dataset. Only the id lists are needed;
-    nothing is copied or moved on TOS.
+  - **TOS datasets:** `split_train_eval.py` is stdlib and **can't read a `tos://` meta**, so
+    pass **`--total-episodes <N>`** explicitly (N = `num_episodes` from stage b's
+    `dataset_explore.json`) — e.g. `--dataset-repo-id tos://<bucket>/<prefix>/<name>
+    --total-episodes 80`. The split itself is the same: it just writes disjoint id lists
+    (`train_episodes` / `eval_episodes`); `lerobot-train --dataset.episodes='[...]'` subsets
+    on TOS with nothing copied.
 
 Writes `preprocess.json` with `train_episodes` + `eval_episodes`. If the user opted out,
 record `eval_episodes: []` (eval then only sanity-checks learning, not generalization).
 
 ### d. Training plan & hardware  (always; gates the train stage)
 Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. This stage:
+- **Flags (exact names — the scripts can't read a `tos://` dataset, so pass the counts):**
+  `plan_training.py --samples <num_frames> --episodes <num_episodes> --gpus <n> --gpu-mem-gb <g>
+  --cuda <idx> --policy-type <act|…> [--policy-path <pretrained>] --dataset-repo-id <id|tos://…>
+  --output-dir <run_dir>`. Note **`--gpus`** (plural, GPU count) and **`--gpu-mem-gb`** — not
+  `--gpu`; `--cuda` is `CUDA_VISIBLE_DEVICES` (e.g. `0`). For a TOS dataset, `--samples` /
+  `--episodes` come from stage b's `dataset_explore.json` (`plan_training.py` doesn't read the
+  dataset). The generated `lerobot-train` command already carries `--env_eval_freq=0` +
+  `--policy.push_to_hub=false`.
 - Checks **GPU count + free memory** (pick idle GPUs), **disk space** for checkpoints
   (must be on `/opt/data` in the pod — and lerobot keeps EVERY checkpoint, no rotation,
   so budget `(steps/save_freq) × ckpt_size`), and **`/dev/shm` size**.

@@ -65,8 +65,9 @@ def main() -> None:
     info_path = find_info_json(args.dataset_repo_id, args.dataset_root)
     if total is None:
         if not info_path:
-            print("ERROR: dataset meta/info.json not found (pass --dataset-root or "
-                  "--total-episodes)", file=sys.stderr)
+            print("ERROR: dataset meta/info.json not found. Pass --dataset-root <local dir>, or "
+                  "--total-episodes N. (A tos://… dataset has no local meta — pass "
+                  "--total-episodes N, from stage b's num_episodes.)", file=sys.stderr)
             sys.exit(2)
         info = json.load(open(info_path))
         total = int(info["total_episodes"])
