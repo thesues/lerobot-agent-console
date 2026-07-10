@@ -181,13 +181,14 @@ def main() -> None:
         parts.append(f"--policy.path={args.policy_path}")
     else:
         parts.append(f"--policy.type={args.policy_type}")
+    parts.append("--policy.push_to_hub=false")   # don't require a Hub repo_id / push weights
     parts.append(f"--output_dir={out_dir}")
     parts.append(f"--steps={steps}")
     parts.append(f"--batch_size={batch}")
     parts.append(f"--num_workers={num_workers}")
     parts.append(f"--save_freq={save_freq}")
     parts.append(f"--log_freq={args.log_freq}")
-    parts.append("--eval_freq=0")            # eval is out-of-band (eval_watcher on held-out episodes)
+    parts.append("--env_eval_freq=0")        # eval is out-of-band (eval_watcher on held-out episodes); flag is env_eval_freq, NOT eval_freq
     parts.append("--wandb.enable=false")
     cuda = f"CUDA_VISIBLE_DEVICES={args.cuda} " if args.cuda else ""
     cmd = f"cd {args.repo} && {cuda}" + " \\\n  ".join(parts)
