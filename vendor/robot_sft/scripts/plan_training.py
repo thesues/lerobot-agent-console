@@ -91,6 +91,43 @@ def load_train_episodes(path: str):
     return None, None
 
 
+_OBJECT_STORE_PREFIXES = ("tos://", "s3://", "gs://", "gcs://")
+
+
+def read_meta_counts(repo_id: str, root: str | None) -> tuple[int | None, int | None]:
+    """(total_frames, total_episodes) from the dataset `meta/info.json`. Reads it locally
+    (--dataset-root or $HF_LEROBOT_HOME/<repo_id>), or — for a `tos://…`/`s3://` repo_id —
+    stream-reads it via fsspec (TOS creds from env; a few-KB read, no dataset download)."""
+    info = None
+    candidates = []
+    if root:
+        candidates.append(os.path.join(root, "meta", "info.json"))
+    hf = os.environ.get("HF_LEROBOT_HOME",
+                        os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "lerobot"))
+    candidates.append(os.path.join(hf, repo_id, "meta", "info.json"))
+    for c in candidates:
+        if os.path.isfile(c):
+            info = json.load(open(c))
+            break
+    if info is None and repo_id.startswith(_OBJECT_STORE_PREFIXES):
+        import fsspec  # lazy: only object-store repo_ids need it
+
+        so: dict = {}
+        if repo_id.startswith("tos://"):
+            so = {"endpoint": os.environ.get("TOS_ENDPOINT", "https://tos-cn-beijing.volces.com"),
+                  "region": os.environ.get("TOS_REGION", "cn-beijing")}
+            if os.environ.get("TOS_ACCESS_KEY"):
+                so["key"] = os.environ["TOS_ACCESS_KEY"]
+            if os.environ.get("TOS_SECRET_KEY"):
+                so["secret"] = os.environ["TOS_SECRET_KEY"]
+        with fsspec.open(f"{repo_id.rstrip('/')}/meta/info.json", "r", **so) as f:
+            info = json.load(f)
+    if info is None:
+        return None, None
+    return (int(info["total_frames"]) if info.get("total_frames") else None,
+            int(info["total_episodes"]) if info.get("total_episodes") else None)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--samples", type=int, help="training frames (total_frames minus eval episodes)")
@@ -125,9 +162,35 @@ def main() -> None:
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
-    samples = args.samples or ((args.episodes or 0) * args.avg_len)
-    if samples <= 0:
-        ap.error("provide --samples (preferred) or --episodes")
+    # Train/eval split (if provided): sizes the train set AND inlines the episode list below.
+    train_eps, eval_eps = (None, None)
+    if args.episodes_file:
+        train_eps, eval_eps = load_train_episodes(args.episodes_file)
+
+    # Auto-read total_frames / total_episodes from the dataset meta when counts aren't given —
+    # local dir or streamed from a tos://…/meta/info.json (so the caller need not pass them).
+    total_frames = total_episodes = None
+    if args.samples is None or (args.episodes is None and train_eps is None):
+        try:
+            total_frames, total_episodes = read_meta_counts(args.dataset_repo_id, args.dataset_root)
+        except Exception:  # noqa: BLE001 — fall back to explicit args / avg-len estimate
+            total_frames = total_episodes = None
+
+    episodes = args.episodes
+    if episodes is None:
+        episodes = len(train_eps) if train_eps is not None else total_episodes
+
+    samples = args.samples
+    if samples is None:
+        if total_frames and total_episodes and train_eps is not None:
+            samples = round(total_frames * len(train_eps) / total_episodes)  # train subset (≈uniform ep len)
+        elif total_frames:
+            samples = total_frames
+        elif episodes:
+            samples = episodes * args.avg_len
+    if not samples or samples <= 0:
+        ap.error("could not determine training frames — pass --samples (or --episodes), or make the "
+                 "dataset meta readable (--dataset-root, or TOS creds for a tos:// repo_id)")
 
     batch = args.batch_size or suggest_batch(args.policy_type, args.gpu_mem_gb)
     global_batch = batch * max(1, args.gpus)
@@ -160,10 +223,6 @@ def main() -> None:
     else:
         num_workers = int(args.num_workers)
         workers_note = "user-specified"
-
-    train_eps, eval_eps = (None, None)
-    if args.episodes_file:
-        train_eps, eval_eps = load_train_episodes(args.episodes_file)
 
     out_dir = args.output_dir or os.path.join(
         _default_artifact_root(), "runs",

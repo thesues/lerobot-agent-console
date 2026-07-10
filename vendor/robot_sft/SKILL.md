@@ -182,14 +182,14 @@ record `eval_episodes: []` (eval then only sanity-checks learning, not generaliz
 
 ### d. Training plan & hardware  (always; gates the train stage)
 Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. This stage:
-- **Flags (exact names — the scripts can't read a `tos://` dataset, so pass the counts):**
-  `plan_training.py --samples <num_frames> --episodes <num_episodes> --gpus <n> --gpu-mem-gb <g>
-  --cuda <idx> --policy-type <act|…> [--policy-path <pretrained>] --dataset-repo-id <id|tos://…>
-  --output-dir <run_dir>`. Note **`--gpus`** (plural, GPU count) and **`--gpu-mem-gb`** — not
-  `--gpu`; `--cuda` is `CUDA_VISIBLE_DEVICES` (e.g. `0`). For a TOS dataset, `--samples` /
-  `--episodes` come from stage b's `dataset_explore.json` (`plan_training.py` doesn't read the
-  dataset). The generated `lerobot-train` command already carries `--env_eval_freq=0` +
-  `--policy.push_to_hub=false`.
+- **Flags (exact names):** `plan_training.py --dataset-repo-id <id|tos://…> --gpus <n>
+  --gpu-mem-gb <g> --cuda <idx> --policy-type <act|…> [--policy-path <pretrained>]
+  --episodes-file <session>/preprocess.json --output-dir <run_dir>`. Note **`--gpus`** (plural,
+  GPU count) and **`--gpu-mem-gb`** — not `--gpu`; `--cuda` is `CUDA_VISIBLE_DEVICES` (e.g. `0`).
+  It **auto-reads `total_frames`/`total_episodes` from the dataset meta** (local, or stream-read
+  from a `tos://…/meta/info.json`), and with `--episodes-file` sizes the **train subset** — so
+  you normally don't pass `--samples`/`--episodes` (they're optional overrides). The generated
+  `lerobot-train` command already carries `--env_eval_freq=0` + `--policy.push_to_hub=false`.
 - Checks **GPU count + free memory** (pick idle GPUs), **disk space** for checkpoints
   (must be on `/opt/data` in the pod — and lerobot keeps EVERY checkpoint, no rotation,
   so budget `(steps/save_freq) × ckpt_size`), and **`/dev/shm` size**.
