@@ -53,9 +53,16 @@ distilled list of the failure modes above, each with the concrete check that pre
 - **Gated / private repos need a token — the pod has none, so PROMPT THE USER for it.** pi0's
   PaliGemma backbone and many bases are gated, and private datasets need auth. If stage a/b
   involves a gated backbone or a private repo, ask the user for their HuggingFace token (`hf_…`,
-  from https://huggingface.co/settings/tokens) and `export HF_TOKEN=hf_…` — it authenticates
-  through the mirror too (equivalently `hf auth login`). Surface this **up front**, not after a
-  6-hour run fails on `401/403`. Never hardcode the token — it comes from the user, via env only.
+  from https://huggingface.co/settings/tokens). Surface this **up front**, not after a 6-hour run
+  fails on `401/403`. Never hardcode the token — it comes from the user.
+- **Creds the user gives in chat MUST be persisted to `~/.bashrc` — not just `export`ed.** TOS
+  keys (`TOS_ACCESS_KEY`/`TOS_SECRET_KEY`) and `HF_TOKEN` are needed by the **background**
+  training process (the watchdog launches `lerobot-train`, which sources `~/.bashrc`). A plain
+  `export FOO=…` only lives in the agent's current shell and **dies before training runs** — the
+  background process would fail with "credentials not found". So when the user provides a key,
+  **append it to `~/.bashrc`** (append/replace the `export` line; `~` is `/opt/data` in the pod)
+  AND `export` it for the current shell. Then every process — server, hermes, watchdog,
+  `lerobot-train` — inherits it. (In the pod, `TOS_*`/`HF_ENDPOINT` may already be in `~/.bashrc`.)
 
 ## Core model: Session → Stages → Runs
 
