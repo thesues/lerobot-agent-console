@@ -648,6 +648,18 @@
 
   function connectChat() {
     chatWS = new WebSocket(wsURL("/ws/chat"));
+    chatWS.onopen = () => {
+      // Resync with the server the moment the socket is up. Without this the sidebar
+      // never fetches on a fresh page load (its only other triggers are opening the
+      // dropdown — which races the still-connecting socket and gets silently dropped
+      // by wsSend — a finished turn, or a delete), so a refresh shows an empty list.
+      // It also repairs a reconnect after a rollout: the new server process has no
+      // active session, so drop our stale curSession — otherwise loadSession()'s
+      // `id === curSession` guard would swallow the click and you couldn't re-select
+      // the session you were in. renderSessions() then adopts the server's `current`.
+      curSession = null;
+      refreshSessions();
+    };
     chatWS.onmessage = (e) => {
       const m = JSON.parse(e.data);
       switch (m.type) {
