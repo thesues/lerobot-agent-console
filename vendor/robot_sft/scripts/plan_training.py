@@ -16,7 +16,8 @@ Usage:
         [--episodes-file <session>/preprocess.json] \
         [--gpus 1] [--gpu-mem-gb 24] [--epochs 6] [--batch-size 8] \
         [--save-freq N] [--throughput-it-s X] [--max-eval-hours 1] \
-        [--num-workers auto] [--shm-gb 16] [--cuda 0] [--output-dir DIR] [--json]
+        [--num-workers auto] [--shm-gb 16] [--cuda 0] [--output-dir DIR] \
+        [--runner uv|python-module] [--out plan.json] [--json]
 
 `--samples` is the training-frame count (≈ total_frames from meta/info.json, minus the
 held-out eval episodes; from dataset_explore). If you only know episodes, pass --episodes
@@ -159,7 +160,13 @@ def main() -> None:
                     help="checkpoint dir; default <artifact_root>/runs/<policy>_<ts> (big disk)")
     ap.add_argument("--repo", default="/lerobot" if os.path.isdir("/lerobot") else ".",
                     help="lerobot checkout to run from (uv venv lives there)")
+    ap.add_argument("--runner", default="uv",
+                    choices=["uv", "python-module"],
+                    help="command runner: 'uv' → 'uv run lerobot-train', "
+                         "'python-module' → 'python -u -m lerobot.scripts.lerobot_train'")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--out", default=None,
+                    help="write JSON plan to this file (instead of stdout)")
     args = ap.parse_args()
 
     # Train/eval split (if provided): sizes the train set AND inlines the episode list below.
@@ -229,7 +236,11 @@ def main() -> None:
         f"{args.policy_type}_{_dt.datetime.now():%Y%m%d_%H%M%S}")
 
     # ---- build the lerobot-train command -----------------------------------
-    parts = ["uv run lerobot-train"]
+    if args.runner == "python-module":
+        runner_cmd = "python -u -m lerobot.scripts.lerobot_train"
+    else:
+        runner_cmd = "uv run lerobot-train"
+    parts = [runner_cmd]
     parts.append(f"--dataset.repo_id={args.dataset_repo_id}")
     if args.dataset_root:
         parts.append(f"--dataset.root={args.dataset_root}")
@@ -270,7 +281,7 @@ def main() -> None:
         # resume (see references/lerobot_resume.md): checkpoints always carry full training
         # state, so any complete checkpoint is resumable via --resume=true.
         "resume_command": (
-            f"cd {args.repo} && {cuda}uv run lerobot-train --resume=true "
+            f"cd {args.repo} && {cuda}{runner_cmd} --resume=true "
             f"--config_path={out_dir}/checkpoints/last/pretrained_model/train_config.json"),
         "launch_command": cmd,
     }
@@ -278,6 +289,11 @@ def main() -> None:
         plan["multi_gpu_note"] = ("for multi-GPU use `uv run accelerate launch --num_processes="
                                   f"{args.gpus} $(which lerobot-train) ...` with the same flags; "
                                   "batch_size is per process")
+
+    if args.out:
+        with open(args.out, "w") as f:
+            json.dump(plan, f, indent=2)
+        print(f"wrote {args.out}", file=__import__("sys").stderr)
 
     if args.json:
         print(json.dumps(plan, indent=2))

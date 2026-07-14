@@ -161,6 +161,14 @@ pure-linear assumption under-estimates capacity). Apply it, **re-run preflight t
 fits**, then recompute `--steps`/`--save_freq` for the new batch and consider scaling LR.
 Note: changing batch mid-run isn't a clean resume — tune the batch *before* the long launch.
 
+**⚠️ Preflight memory readings are noisy at 2-step scale.** Peak GPU memory can fluctuate
+±50% between preflight runs (e.g. batch=50 showing 6GB vs batch=48 showing 20GB on the
+same GPU). This is expected — 2 steps is too short for steady-state memory. When the
+`batch_suggestion` looks implausibly large (3×+ headroom on a batch that should be near
+the limit), **ignore it and go with the most conservative reading**. Better: after the
+first preflight green-lights a batch, try one step larger and preflight again — if it
+OOMs, you've found the ceiling.
+
 ## 17. Verify resumability against the REAL checkpoint anatomy, not assumptions
 **Symptom:** a resumability check reports `fail` on a good checkpoint (needless from-scratch
 restarts), or `pass` on a truncated one (resume then crashes).
@@ -174,7 +182,55 @@ scheduler_state.json,training_step.json}}` plus a `checkpoints/last` symlink.
 `training_state/{optimizer_state.safetensors,training_step.json,rng_state*}`. Confirm against
 a real checkpoint produced by *this* lerobot version if in doubt (preflight saves one).
 
-## 18. Streaming training from TOS — now first-class, and the (fixed) frame-alignment bug
+## 19. `offline_eval.py` / `eval_watcher.py` fail on `tos://` dataset URLs
+**Symptom:** eval watcher logs `HFValidationError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': 'tos://…'` for every checkpoint, and `eval_results.jsonl` has `mean_mse=None` everywhere. The eval curve is silently empty.
+**Why:** `offline_eval.py` passes `--dataset-repo-id` to lerobot's `get_repo_versions()` / Hub API, which validates the repo_id as a HuggingFace Hub repo and rejects `tos://` / `s3://` URLs. The eval_watcher wraps offline_eval, so it inherits this gap.
+**Check (stage e):** after the first checkpoint is saved (usually a few minutes in), poll the eval watcher log (`eval/eval_watcher.log`). If you see `HFValidationError`, the auto-eval curve won't populate — switch to manual eval (see #20) for that run.
+**Fix:** patch `offline_eval.py` to recognize `tos://` (and `s3://`) dataset refs and use `StreamingTOSRobotDataset` instead of `LeRobotDataset` / Hub API calls. Until fixed, run manual eval per #20.
+
+## 20. Manual held-out eval on a TOS dataset (when offline_eval fails)
+When #19 blocks the eval watcher, run held-out eval manually. You need three things the eval_watcher normally does for you:
+1. **Set `delta_timestamps` for chunked policies.** The training pipeline sets `delta_timestamps` from the policy config's `action_delta_indices` / `observation_delta_indices` via `factory.py`, but `StreamingTOSRobotDataset` does NOT auto-derive them. For ACT (`chunk_size=100`): `delta_timestamps = {'action': [i/fps for i in range(100)]}`. Without this, the dataset returns single actions `(6,)` but the model expects chunks `(100, 6)`.
+2. **Apply normalization from the checkpoint.** The model was trained on normalized data. The normalizer stats live in `<ckpt>/pretrained_model/policy_preprocessor_step_3_normalizer_processor.safetensors`. Load with `safetensors.torch.load_file()` and apply `(x - mean) / std.clamp_min(1e-8)` to `action`, `observation.state`, and each `observation.images.*` key before calling `policy.forward()`.
+3. **Use `policy.forward(batch)` for loss computation** — it handles the VAE KL term and `action_is_pad` mask correctly. Returns `(loss, loss_dict)` where `loss_dict['l1_loss']` is the per-step L1.
+
+Full pattern (~50 lines, runs in a few minutes on 8 held-out episodes):
+```python
+import torch, safetensors.torch
+from lerobot.datasets import StreamingTOSRobotDataset
+from lerobot.policies.act.modeling_act import ACTPolicy
+from lerobot.configs.policies import PreTrainedConfig
+from lerobot.utils.constants import OBS_IMAGES
+
+ckpt_path = '<run_dir>/checkpoints/<step>/pretrained_model'
+norm = safetensors.torch.load_file(f'{ckpt_path}/policy_preprocessor_step_3_normalizer_processor.safetensors')
+pt_config = PreTrainedConfig.from_pretrained(ckpt_path)
+policy = ACTPolicy(pt_config)
+policy.load_state_dict(safetensors.torch.load_file(f'{ckpt_path}/model.safetensors'), strict=False)
+policy.eval().cuda()
+
+ds = StreamingTOSRobotDataset('tos://…', episodes=[<held-out ids>],
+    delta_timestamps={'action': [i/pt_config.fps for i in pt_config.action_delta_indices]})
+
+def norm_tensor(t, key):
+    return (t - norm[f'{key}.mean'].to(t.device)) / norm[f'{key}.std'].to(t.device).clamp_min(1e-8)
+
+losses = []
+with torch.no_grad():
+    for batch in ds:
+        for k in list(batch):
+            if isinstance(batch[k], torch.Tensor):
+                batch[k] = batch[k].cuda().unsqueeze(0)
+        batch = dict(batch)
+        for k in ['action', 'observation.state'] + list(pt_config.image_features):
+            batch[k] = norm_tensor(batch[k], k)
+        batch[OBS_IMAGES] = [batch[k] for k in pt_config.image_features]
+        loss, d = policy.forward(batch)
+        losses.append(d['l1_loss'])
+print(f'Mean eval L1: {sum(losses)/len(losses):.4f}')
+```
+Compare eval L1 to the training log's final `loss:` value — a gap of ~1.5× is normal; >5× suggests overfitting or a data mismatch.
+
 **Streaming a `tos://` dataset for training is now first-class:** `make_dataset` recognizes a
 `tos://` URL and builds `StreamingTOSRobotDataset` (TOS creds from env), auto-forcing
 `--dataset.streaming`. So plain **`lerobot-train --dataset.repo_id=tos://…`** works end-to-end —

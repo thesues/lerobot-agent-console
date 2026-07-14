@@ -31,6 +31,12 @@ distilled list of the failure modes above, each with the concrete check that pre
 
 - The **lerobot checkout is `/lerobot`** — run every lerobot command from there so the uv
   venv resolves: `cd /lerobot && uv run lerobot-train ...` / `uv run python ...`.
+  In some environments `uv run` causes multi-process issues — use
+  `python -u -m lerobot.scripts.lerobot_train` instead (pass `--runner python-module` to
+  `plan_training.py` to auto-generate the correct command).
+  directly. **Do NOT use `uv run lerobot-train`** — `uv run` triggers multi-process issues
+  in this environment and the venv is already resolved. Similarly use `python` (not
+  `uv run python`) for scripts that import lerobot.
 - **All big artifacts live on `/opt/data`** (the roomy persistent volume): session state
   defaults to `/opt/data/robot_sft/` (via `session.py`), checkpoints to
   `/opt/data/robot_sft/runs/...` (via `plan_training.py`), and HF caches land under
@@ -184,12 +190,23 @@ record `eval_episodes: []` (eval then only sanity-checks learning, not generaliz
 Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. This stage:
 - **Flags (exact names):** `plan_training.py --dataset-repo-id <id|tos://…> --gpus <n>
   --gpu-mem-gb <g> --cuda <idx> --policy-type <act|…> [--policy-path <pretrained>]
-  --episodes-file <session>/preprocess.json --output-dir <run_dir>`. Note **`--gpus`** (plural,
-  GPU count) and **`--gpu-mem-gb`** — not `--gpu`; `--cuda` is `CUDA_VISIBLE_DEVICES` (e.g. `0`).
-  It **auto-reads `total_frames`/`total_episodes` from the dataset meta** (local, or stream-read
-  from a `tos://…/meta/info.json`), and with `--episodes-file` sizes the **train subset** — so
-  you normally don't pass `--samples`/`--episodes` (they're optional overrides). The generated
-  `lerobot-train` command already carries `--env_eval_freq=0` + `--policy.push_to_hub=false`.
+  --episodes-file <session>/preprocess.json --output-dir <run_dir> [--out <path>]`.
+  Note **`--gpus`** (plural, GPU count) and **`--gpu-mem-gb`** — not `--gpu`;
+  `--cuda` is `CUDA_VISIBLE_DEVICES` (e.g. `0`). **Use `--out <file>` to write the
+  JSON plan directly** — do NOT use shell `>` redirection as a workaround; the script
+  now has an explicit `--out` flag. (Historical footgun: before `--out` existed,
+  argparse prefix-matched a mistyped `--out` to `--output-dir`, silently overwriting
+  the checkpoint path.)
+  - **Flags (exact names):** `plan_training.py --dataset-repo-id <id|tos://…> --gpus <n>
+    --gpu-mem-gb <g> --cuda <idx> --policy-type <act|…> [--policy-path <pretrained>]
+    --episodes-file <session>/preprocess.json --output-dir <run_dir>`. Note **`--gpus`** (plural,
+    GPU count) and **`--gpu-mem-gb`** — not `--gpu`; `--cuda` is `CUDA_VISIBLE_DEVICES` (e.g. `0`).
+    It **auto-reads `total_frames`/`total_episodes` from the dataset meta** (local, or stream-read
+    from a `tos://…/meta/info.json`), and with `--episodes-file` sizes the **train subset** — so
+    you normally don't pass `--samples`/`--episodes` (they're optional overrides). The generated
+    `lerobot-train` command already carries `--env_eval_freq=0` + `--policy.push_to_hub=false`.
+    **⚠️ Do NOT pass `--out` — argparse prefix-matches it to `--output-dir`, silently overriding
+    the output-dir you set. Redirect stdout with `> file` instead.**
 - Checks **GPU count + free memory** (pick idle GPUs), **disk space** for checkpoints
   (must be on `/opt/data` in the pod — and lerobot keeps EVERY checkpoint, no rotation,
   so budget `(steps/save_freq) × ckpt_size`), and **`/dev/shm` size**.
@@ -213,12 +230,27 @@ dir and classifies the result — catching auth / `/dev/shm` / feature-mismatch 
 bugs in ~1–3 min instead of after a 6-hour launch. Do not proceed to stage e until
 preflight is green (or the user accepts the risk).
 
+**⚠️ PITFALL: argparse prefix-matching `--out` → `--output-dir`.** `plan_training.py`
+accepts `--output-dir` (for checkpoint storage) but NOT a bare `--out` (it was only added
+in a later version). If you pass `--out some/path`, argparse prefix-matches it to
+`--output-dir` and silently overwrites the checkpoint path with the JSON path — then the
+launch command targets the wrong directory and training fails. **Always use `--out
+<path>` (the explicit flag, now supported) or `--json > <path>` (stdout redirect).** Never
+rely on `--out` as a shorthand without the `--out` flag being present.
+
 **Right-size the batch from measured memory (don't fly blind):** the planner picks an
 initial batch from a policy-family heuristic *before* seeing real usage. preflight samples
 **peak GPU memory** during the smoke run and emits a `batch_suggestion` (scale
 `--batch_size` to ~85% of memory). Apply it, **re-run preflight to confirm it fits**, then
 recompute `--steps`/`--save_freq` for the new batch (and consider scaling LR). A bigger
 batch that fits = higher GPU utilization and a faster run (lessons_learned #16).
+
+**⚠️ PITFALL: preflight memory measurement is noisy on 2-step runs.** Peak GPU memory
+sampled over only 2 steps can vary wildly (e.g. batch=50 measured 6015 MB in one run and
+23913 MB in another — 4× spread). When the `batch_suggestion` seems implausible (e.g.
+suggesting 173 from 50), ignore it — use the **highest** stable reading across 2–3
+preflight runs, and never push past ~85% of total memory. When in doubt, prefer a
+conservative batch that passed preflight cleanly over an aggressive suggestion.
 
 ### d★. Confirm the plan with the user  (HARD GATE — before any real GPU-hours)
 Once preflight is green and the batch is right-sized, **do NOT launch training silently.**
@@ -260,6 +292,12 @@ Launch training and the monitors. Three background processes, all communicating 
    on a single-GPU pod evals run between checkpoints and exit, keep `--eval-timeout`) —
    appending mean MSE/MAE per checkpoint to `eval/eval_results.jsonl`. It is resumable
    (skips checkpoints already scored).
+   **⚠️ `offline_eval.py` does NOT support `tos://` dataset URLs** — it passes the repo_id
+   to HF Hub API which rejects object-store URLs (lessons_learned #19). For a TOS dataset,
+   the eval watcher will run but produce `mean_mse=None` for every checkpoint. Until fixed,
+   either download the dataset + use `--dataset.root`, or run manual eval per lessons_learned
+   #20 after training finishes. Poll `eval/eval_watcher.log` after the first checkpoint to
+   catch this early.
 
 You may either let `watchdog.py` run autonomously and poll its `run.json`, or drive the
 cadence yourself with `/loop` (re-invoking a status check every few minutes). Prefer the
@@ -275,7 +313,7 @@ verdict, not just "done".
 been scoring every checkpoint on the held-out split *throughout* training, so by the end
 `eval/eval_results.jsonl` already holds the MSE/MAE curve — choose the checkpoint with the
 lowest mean MSE (visible on the dashboard's eval chart). To (re)score a checkpoint
-manually: `cd /lerobot && uv run python <skill>/scripts/offline_eval.py --model-path
+manually: `cd /lerobot && python <skill>/scripts/offline_eval.py --model-path
 <output_dir>/checkpoints/<N>/pretrained_model --dataset-repo-id <id> [--dataset-root <dir>]
 --episodes <held-out ids>`. Because these episodes were excluded from training (stage c),
 this is a real generalization signal, not memorization. Open-loop still ≠ closed-loop: it
@@ -333,7 +371,9 @@ picks checkpoints, it does not prove real-robot success.
   update-run). Use for all state changes. Defaults to `/opt/data/robot_sft` in the pod.
 - `scripts/check_hardware.py` — GPUs, free memory, disk, `/dev/shm`; prints JSON + warnings.
 - `scripts/plan_training.py` — compute steps/epochs/batch and emit the `lerobot-train`
-  launch + resume commands.
+  launch + resume commands. Defaults to `python -u -m lerobot.scripts.lerobot_train`;
+  pass `--use-uv` for `uv run lerobot-train` (legacy envs). Use `--out <file>` to write
+  the JSON plan directly.
 - `scripts/split_train_eval.py` — deterministic held-out episode split (id lists only; no
   dataset copying — lerobot subsets via `--dataset.episodes`).
 - `scripts/preflight.py` — ~2-step smoke test of the real command (incl. one checkpoint
@@ -431,7 +471,7 @@ no download, no custom loop. Pass the `tos://` URL as `--dataset.repo_id`; it au
 loop, checkpoints (`pretrained_model/` + `training_state/`), resume, watchdog, and
 `offline_eval` all work unchanged. **This is the default path for a TOS dataset.**
 ```bash
-cd /lerobot && HF_ENDPOINT=https://hf-mirror.com CUDA_VISIBLE_DEVICES=<gpu> lerobot-train \
+cd /lerobot && HF_ENDPOINT=https://hf-mirror.com CUDA_VISIBLE_DEVICES=<gpu> python -u -m lerobot.scripts.lerobot_train \
   --dataset.repo_id=tos://<bucket>/<prefix>/<name> \
   --policy.type=act --policy.push_to_hub=false \
   --dataset.episodes="[<train ids>]" --env_eval_freq=0 \
