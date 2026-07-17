@@ -112,6 +112,72 @@ LiveKit 服务端配置：信令 `7880/TCP`、rtc `7881/TCP`、媒体 `7882/UDP`
 
 更详细的配置、传输后端与设计说明，见 [lerobot webrtc_proxy README](doc:webrtc)（直接读镜像里 `/lerobot` 下的本地文档）。
 
+### 2.1 远程本体 × 远程推理 · WebRTC 接入 async_inference（零改代码）
+
+上面的 LiveKit 远程把**机器人本体**搬到了远端；LeRobot 的 `async_inference` 则把**策略推理**搬到远端（机器人只发观测、收回成块的动作 `action chunk`，推理延迟由动作队列吸收，不打断执行）。这两件事是**正交的**，可以叠加——而且**不用改任何代码**就能把「被 WebRTC 代理的远端机器人」交给一个 policy server 驱动。
+
+原因：`RobotClient` 用标准工厂 `make_robot_from_config(config.robot)` 构造机器人，而工厂**原生支持** `--robot.type=webrtc_proxy`（`WebRTCProxyRobot` 实现了完整 `Robot` 接口，其 observation/action schema 与 `so_follower` 完全一致：`<motor>.pos` 浮点 + 每路相机 `HxWx3`）。于是拓扑变成：
+
+```
+真机(mac_daemon) ⟷ LiveKit ⟷ [云: RobotClient + WebRTCProxyRobot] ⟷ gRPC ⟷ PolicyServer(GPU)
+```
+
+**① 云端 GPU：起 policy server**（策略由 client 下发，server 只需 host/port/fps）：
+
+```bash
+python -m lerobot.async_inference.policy_server --host=0.0.0.0 --port=8080 --fps=30
+```
+
+**② 机器人侧（你的 Mac）：照常起 mac_daemon**（和遥操作用的完全一样，`--session` 即 LiveKit room）：
+
+```bash
+python -m lerobot.robots.webrtc_proxy.mac_daemon \
+  --transport livekit --session so100 \
+  --livekit-url ws://<你的 LiveKit 地址>:7880 \
+  --livekit-api-key devkey --livekit-api-secret lerobotlivekitsecret0123456789abcd \
+  --robot.type=so100_follower --robot.port=/dev/tty.usbmodemXXXX \
+  --robot.cameras="{ front: {type: opencv, index_or_path: 1, width: 640, height: 480, fps: 30}, wrist: {type: opencv, index_or_path: 0, width: 640, height: 480} }"
+```
+
+**③ 先预签一个 LiveKit JWT**——云侧的 `WebRTCProxyRobotConfig` 只有 `livekit_token` 字段、**不能像 mac_daemon 那样用 api-key/secret 自签**，room 编码在 token 里，所以要先生成（identity 用 `controller`，room 必须 == mac 侧的 `--session`）：
+
+```bash
+python -c "from lerobot.robots.webrtc_proxy.transport_livekit import make_livekit_token; \
+print(make_livekit_token(api_key='devkey', api_secret='lerobotlivekitsecret0123456789abcd', identity='controller', room='so100'))"
+```
+
+**④ 云端：起 robot_client，`--robot.type=webrtc_proxy` 驱动远端机器人跑策略**（在控制台终端里跑，与 policy server 同集群）：
+
+```bash
+python src/lerobot/async_inference/robot_client.py \
+  --robot.type=webrtc_proxy \
+  --robot.transport_backend=livekit \
+  --robot.livekit_url=ws://livekit-clb:7880 \
+  --robot.livekit_token='<上一步生成的 JWT>' \
+  --robot.motors='[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]' \
+  --robot.cameras='{front: {height: 480, width: 640, fps: 30}, wrist: {height: 480, width: 640, fps: 30}}' \
+  --server_address=127.0.0.1:8080 \
+  --policy_type=act --pretrained_name_or_path=<你的模型> \
+  --policy_device=cuda --client_device=cpu \
+  --task="fold the towel" \
+  --actions_per_chunk=50 --chunk_size_threshold=0.5 --fps=30 \
+  --aggregate_fn_name=weighted_average
+```
+
+**字段对齐（成败在这，不是代码）：**
+
+| 要素 | 必须满足 | 出错表现 |
+|------|----------|----------|
+| `--robot.motors` | == 策略训练时的电机集合（默认 6 个 SO-100 电机 → `.pos` 键；SO-100/101 策略开箱即用） | 动作维度不匹配报错 |
+| `--robot.cameras` **名字** | 每路相机名 == 策略的 `observation.images.<name>`，也 == mac 侧 `--robot.cameras` 的 key。**默认只有 `front` 一路，多数策略是 `front`+`wrist`，必须显式补齐** | 缺相机键 / 观测维度错 |
+| `--robot.cameras` **形状** | `HxW` 尽量对齐训练分辨率（否则依赖 policy processor 缩放） | 精度下降 |
+| 动作键名 | 策略输出的动作以 `.pos` 结尾（`send_action` 只保留 `.pos` 键） | 动作被静默丢弃、机器人不动 |
+| LiveKit room | 预签 token 的 `room` == mac 侧 `--session` | 连不上、收不到观测 |
+
+**延迟注意：** PolicyServer 的推理延迟被 async_inference 的动作队列吸收（这正是它和逐帧遥操作相比的优势），但 **LiveKit 取观测那一跳仍在环里**（`WebRTCProxyRobot.send_action` 内含 `timeout=2.0`，链路卡超过 2s 会抛）。网络差时调大 `--chunk_size_threshold` 留足缓冲。
+
+> 一句话选型：要**人在环的遥操作 / 数据采集 / 实时视频**，用上面的 §2 遥操作路径；要**纯策略的远程推理部署**，用本节的 async_inference 路径——动作块机制天生比逐帧 WebRTC 更抗延迟。
+
 ---
 
 ## 二、控制台自带的能力
