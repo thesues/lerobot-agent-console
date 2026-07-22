@@ -205,6 +205,13 @@ Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. Th
     from a `tos://…/meta/info.json`), and with `--episodes-file` sizes the **train subset** — so
     you normally don't pass `--samples`/`--episodes` (they're optional overrides). The generated
     `lerobot-train` command already carries `--env_eval_freq=0` + `--policy.push_to_hub=false`.
+  - **fp8 training:** add **`--float8`** to `plan_training.py` for a VLA policy (pi0/pi05/…) on a
+    **Hopper/Ada GPU (H20/H100, sm_89/90+)** — it appends `--use_float8=true --float8_recipe=rowwise
+    --policy.dtype=bfloat16`. **NOT on A30** (Ampere): lerobot-train ERRORS out (`compute
+    capability >= 8.9`), so only pass it when `check_hardware` reports an H20/Hopper card.
+    preflight inherits it from the plan (`--session`) — the smoke run uses the same fp8 config, so
+    the memory estimate is accurate; watchdog resume reloads it from the saved `train_config.json`.
+    See `references/policy_selection.md`.
     **⚠️ Do NOT pass `--out` — argparse prefix-matches it to `--output-dir`, silently overriding
     the output-dir you set. Redirect stdout with `> file` instead.**
 - Checks **GPU count + free memory** (pick idle GPUs), **disk space** for checkpoints

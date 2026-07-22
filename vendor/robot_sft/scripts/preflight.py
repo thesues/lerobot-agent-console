@@ -101,6 +101,12 @@ def main() -> None:
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--mem-frac", type=float, default=0.85,
                     help="target fraction of GPU memory to fill when suggesting a bigger batch")
+    ap.add_argument("--float8", action="store_true",
+                    help="ensure the smoke run uses fp8 (--use_float8=true --float8_recipe=rowwise "
+                         "--policy.dtype=bfloat16). Normally inherited from the launch command; "
+                         "use this to force it for a standalone --command. Hopper/Ada GPU only.")
+    ap.add_argument("--float8-recipe", default="rowwise",
+                    choices=["rowwise", "tensorwise", "rowwise_with_gw_hp"])
     args = ap.parse_args()
 
     plan = None
@@ -111,6 +117,16 @@ def main() -> None:
         cmd, real_out = args.command, args.output_dir or ""
     else:
         ap.error("provide --session or --command")
+
+    # fp8 is normally already in the launch command (plan_training --float8). The --session path
+    # inherits it automatically; only override_flag-inject when explicitly asked (idempotent), so
+    # a standalone --command run smoke-tests the SAME fp8 config the real run will use.
+    if args.float8 or (plan and plan.get("float8")):
+        recipe = (plan.get("float8_recipe") if plan else None) or args.float8_recipe
+        cmd = _override_flag(cmd, "policy.dtype", "bfloat16")
+        cmd = _override_flag(cmd, "use_float8", "true")
+        cmd = _override_flag(cmd, "float8_recipe", recipe)
+        print("[preflight] fp8 (float8) training ENABLED for the smoke run")
 
     tmp_root = tempfile.mkdtemp(prefix="robot_sft_preflight_")
     # lerobot-train refuses a pre-existing output_dir; give it a fresh subdir.

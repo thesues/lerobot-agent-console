@@ -164,6 +164,15 @@ def main() -> None:
                     choices=["uv", "python-module"],
                     help="command runner: 'uv' → 'uv run lerobot-train', "
                          "'python-module' → 'python -u -m lerobot.scripts.lerobot_train'")
+    ap.add_argument("--float8", action="store_true",
+                    help="fp8 (float8) training via torchao. Adds --use_float8=true "
+                         "--float8_recipe=<recipe> and --policy.dtype=bfloat16. HOPPER/ADA GPUs "
+                         "ONLY (H20/H100/L40S, sm_89/90+) — on an A30 lerobot-train ERRORS out. "
+                         "Speeds up MLP/FFN GEMMs of VLA policies (pi0/pi05/...); safe no-op on "
+                         "conv/small policies. See references/policy_selection.md.")
+    ap.add_argument("--float8-recipe", default="rowwise",
+                    choices=["rowwise", "tensorwise", "rowwise_with_gw_hp"],
+                    help="torchao float8 recipe (default rowwise: more accurate)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--out", default=None,
                     help="write JSON plan to this file (instead of stdout)")
@@ -260,6 +269,12 @@ def main() -> None:
     parts.append(f"--log_freq={args.log_freq}")
     parts.append("--env_eval_freq=0")        # eval is out-of-band (eval_watcher on held-out episodes); flag is env_eval_freq, NOT eval_freq
     parts.append("--wandb.enable=false")
+    if args.float8:
+        # fp8 composes with bf16 autocast (master weights stay bf16), so set dtype too. Only the
+        # MLP/FFN Linears get fp8; attention + heads stay bf16. Needs a Hopper/Ada GPU at runtime.
+        parts.append("--policy.dtype=bfloat16")
+        parts.append("--use_float8=true")
+        parts.append(f"--float8_recipe={args.float8_recipe}")
     cuda = f"CUDA_VISIBLE_DEVICES={args.cuda} " if args.cuda else ""
     cmd = f"cd {args.repo} && {cuda}" + " \\\n  ".join(parts)
 
@@ -273,6 +288,8 @@ def main() -> None:
         "eval_cadence_note": eval_cadence_note,
         "output_dir": out_dir,
         "repo": args.repo,
+        "float8": args.float8,
+        "float8_recipe": args.float8_recipe if args.float8 else None,
         "cuda_visible_devices": args.cuda,
         "dataset_repo_id": args.dataset_repo_id,
         "dataset_root": args.dataset_root,
