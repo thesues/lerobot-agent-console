@@ -29,6 +29,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import check_features  # noqa: E402
 import error_patterns  # noqa: E402
 
 STEP_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*\[")   # tqdm "1/2 ["
@@ -80,6 +81,34 @@ def _override_flag(cmd: str, flag: str, value) -> str:
     return cmd + f" --{flag}={value}"
 
 
+def _flag(cmd: str, flag: str) -> str | None:
+    """Value of a draccus `--flag=X` / `--flag X` in the command, or None."""
+    m = re.search(rf"--{re.escape(flag)}[= ]('[^']*'|\"[^\"]*\"|\S+)", cmd)
+    return m.group(1).strip("'\"") if m else None
+
+
+def _feature_precheck(cmd: str) -> bool:
+    """True = OK to proceed. On a definitive camera mismatch, print the fix and return False.
+    An unreadable-config ('unknown') does NOT gate — we don't block a run on a network miss."""
+    policy_path = _flag(cmd, "policy.path")
+    if not policy_path:
+        return True  # --policy.type trains from scratch; no camera constraint
+    repo_id = _flag(cmd, "dataset.repo_id")
+    if not repo_id:
+        return True
+    r = check_features.check(repo_id, _flag(cmd, "dataset.root"), policy_path, _flag(cmd, "policy.type"))
+    if r["status"] == "mismatch":
+        print("\n[preflight] ✗ CAMERA MISMATCH — the training WILL crash in make_policy. "
+              "Fixed BEFORE launching (saved a slow model load):")
+        print(f"  dataset has : {r['provided']}")
+        print(f"  policy wants: {r['expected']}")
+        print("\nFIX:\n" + r["fix"] + "\n")
+        return False
+    if r["status"] == "unknown":
+        print(f"[preflight] camera pre-check skipped ({r.get('detail')}).")
+    return True
+
+
 def smoke_command(cmd: str, real_output_dir: str, tmp_dir: str, steps: int) -> str:
     """Force tiny steps + temp output dir for the smoke run only."""
     cmd = _override_flag(cmd, "steps", steps)
@@ -127,6 +156,12 @@ def main() -> None:
         cmd = _override_flag(cmd, "use_float8", "true")
         cmd = _override_flag(cmd, "float8_recipe", recipe)
         print("[preflight] fp8 (float8) training ENABLED for the smoke run")
+
+    # Fast camera-key pre-check BEFORE the heavy smoke run. Finetuning a pretrained VLA
+    # (--policy.path) whose cameras differ from the dataset crashes deep in make_policy after a
+    # slow model load; catch it here in a second from the two config JSONs (no torch, no weights).
+    if not _feature_precheck(cmd):
+        sys.exit(2)   # gate: non-zero so the agent/watchdog does NOT launch the doomed run
 
     tmp_root = tempfile.mkdtemp(prefix="robot_sft_preflight_")
     # lerobot-train refuses a pre-existing output_dir; give it a fresh subdir.

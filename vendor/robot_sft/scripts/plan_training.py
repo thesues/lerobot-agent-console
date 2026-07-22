@@ -307,6 +307,26 @@ def main() -> None:
                                   f"{args.gpus} $(which lerobot-train) ...` with the same flags; "
                                   "batch_size is per process")
 
+    # Camera pre-check when finetuning a pretrained VLA: a mismatch between the checkpoint's
+    # cameras and the dataset's crashes lerobot deep in make_policy. Catch it now (from the two
+    # config JSONs) instead of handing back a command that will fail — preflight re-checks too.
+    if args.policy_path:
+        import sys as _sys
+
+        _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import check_features
+        fc = check_features.check(args.dataset_repo_id, args.dataset_root, args.policy_path, args.policy_type)
+        if fc["status"] == "mismatch":
+            print("\n✗ CAMERA MISMATCH — this dataset and checkpoint don't fit; the training "
+                  "would crash in make_policy.", file=_sys.stderr)
+            print(f"  dataset has : {fc['provided']}\n  policy wants: {fc['expected']}", file=_sys.stderr)
+            print("\nFIX:\n" + fc["fix"], file=_sys.stderr)
+            plan["feature_mismatch"] = fc   # recorded so the agent/UI can surface it
+            if args.out:
+                with open(args.out, "w") as f:
+                    json.dump(plan, f, indent=2)
+            _sys.exit(2)
+
     if args.out:
         with open(args.out, "w") as f:
             json.dump(plan, f, indent=2)

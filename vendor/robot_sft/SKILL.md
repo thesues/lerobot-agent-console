@@ -237,6 +237,18 @@ dir and classifies the result — catching auth / `/dev/shm` / feature-mismatch 
 bugs in ~1–3 min instead of after a 6-hour launch. Do not proceed to stage e until
 preflight is green (or the user accepts the risk).
 
+**Camera pre-check (finetuning a pretrained VLA).** When `--policy.path` is a pretrained
+checkpoint (`lerobot/pi05_base`, `pi0_base`, `smolvla_base`, …), both `plan_training.py`
+and `preflight.py` FIRST run `scripts/check_features.py` — a 1-second static compare of the
+dataset's `observation.images.*` keys vs the checkpoint's expected ones (two small JSONs, no
+torch, no weights). A mismatch (e.g. the checkpoint wants DROID's `base_0_rgb /
+left_wrist_0_rgb / right_wrist_0_rgb` but the dataset has `front / wrist`) exits **2** with the
+fix, instead of crashing deep in `make_policy` after a slow model load:
+- fewer/equal cameras, just renamed → a `--rename_map` (verify the physical-camera pairing);
+- **more** cameras than the dataset has (can't rename one in) → train from scratch:
+  `--policy.type=<family>` instead of `--policy.path=<checkpoint>`.
+Run it standalone too: `python scripts/check_features.py --dataset-repo-id <id> --policy-path <ckpt>`.
+
 **⚠️ PITFALL: argparse prefix-matching `--out` → `--output-dir`.** `plan_training.py`
 accepts `--output-dir` (for checkpoint storage) but NOT a bare `--out` (it was only added
 in a later version). If you pass `--out some/path`, argparse prefix-matches it to
