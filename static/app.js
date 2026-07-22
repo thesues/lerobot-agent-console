@@ -503,12 +503,21 @@
     wsSend({ type: "session_new" });           // server replies session_switched(fresh)
   }
   function loadSession(id, title) {
-    if (id === curSession) { toggleSessMenu(false); return; }
     toggleSessMenu(false);
-    if (busy) stopTurn();                      // abandon any in-flight turn, then switch
+    // No `id === curSession` early-return: curSession is written by three racing sources
+    // (session_switched, histStart, and late session_list replies re-asserting the server's
+    // old `current`), so right after creating/switching sessions it can disagree with what
+    // the pane shows — and the guard then silently ate the click ("点击session不切换").
+    // Always send the load: re-loading the current session is an idempotent 0.2s history
+    // replay. The one guard kept: clicking the row of the session that is STREAMING right
+    // now must not kill its own turn.
+    if (busy) {
+      if (id === curSession) return;
+      stopTurn();                              // switching away: abandon the in-flight turn
+    }
     setTitle(title);                           // optimistic title only; curSession is set when the
     wsSend({ type: "session_load", id });       // server actually starts streaming (history_start).
-  }                                             // Setting it early left a stale guard that ate the 1st click.
+  }
   function deleteSession(id) {
     if (busy) return;
     wsSend({ type: "session_delete", id });     // server re-lists from the store; onDeleted refreshes
@@ -537,9 +546,14 @@
 
   function renderSessions(items, current) {
     items = items || [];        // the store IS the source of truth now — nothing to filter
-    curSession = current || curSession;
-    const cur = items.find((s) => s.id === current);
-    if (cur) setTitle(cur.title);
+    // Adopt the server's `current` only when idle: while a turn streams or a history load is
+    // in flight (busy), this reply may predate the switch — letting it clobber curSession /
+    // the title mid-load is exactly the desync that made clicks on the "wrong" row no-ops.
+    if (!busy) {
+      curSession = current || curSession;
+      const cur = items.find((s) => s.id === current);
+      if (cur) setTitle(cur.title);
+    }
     sessList.innerHTML = "";
     sessFoot.textContent = "";
     if (!items.length) { sessList.innerHTML = '<div class="sess-empty">还没有会话</div>'; return; }
