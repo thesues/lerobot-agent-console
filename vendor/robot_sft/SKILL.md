@@ -51,10 +51,20 @@ distilled list of the failure modes above, each with the concrete check that pre
   **never** into the skill's own `scripts/` dir (that's the vendored, versioned tooling).
 - Outside the pod both default to the current directory (`.robot_sft/`); override with
   `$ROBOT_SFT_HOME` / `--output-dir`.
-- **HuggingFace Hub downloads go through a mirror — the pod is behind a firewall that blocks
-  `huggingface.co`.** Just `export HF_ENDPOINT=https://hf-mirror.com` at session start;
-  every Hub pull (datasets via `--dataset.repo_id`, pretrained backbones via `--policy.path`
-  — pi0's PaliGemma, SmolVLA, …, and the `hf` CLI) then goes through the mirror.
+- **External models/datasets: prefer `oniond`, then HF-mirror.** For an HF-style `org/name`
+  model or dataset, resolve the source with `python scripts/fetch.py {model|dataset} <org/name>`
+  FIRST — it downloads from the Volcengine TOS bucket via `oniond` (fast, in-cluster, no AK/SK)
+  when the name is in the bucket, else falls back to the HF hub. It prints JSON
+  `{"source","repo_id","local_path"}`; then use:
+  - model  → `--policy.path=<local_path or repo_id>`
+  - dataset→ `--dataset.repo_id=<repo_id>` plus `--dataset.root=<local_path>` when `local_path` is set.
+
+  `oniond` stores files flat, so `local_path` (e.g. `/opt/data/.cache/oniond/pi05_base`) is a
+  valid `--policy.path` / `--dataset.root` as-is. `tos://…` refs are passed through untouched
+  (StreamingTOSRobotDataset).
+- **The HF-mirror fallback: the pod is behind a firewall that blocks `huggingface.co`.** Set
+  `export HF_ENDPOINT=https://hf-mirror.com` at session start; every Hub pull (`--dataset.repo_id`,
+  pretrained backbones via `--policy.path`, the `hf` CLI) then goes through the mirror.
   TOS/`StreamingTOSRobotDataset` datasets don't touch the Hub.
 - **Gated / private repos need a token — the pod has none, so PROMPT THE USER for it.** pi0's
   PaliGemma backbone and many bases are gated, and private datasets need auth. If stage a/b

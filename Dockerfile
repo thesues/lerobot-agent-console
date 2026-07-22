@@ -40,8 +40,27 @@ RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
       [ -f "$f" ] && sed -i -E "s#https?://(mirrors\.aliyun\.com|deb\.debian\.org|security\.debian\.org)#${APT_MIRROR}#g" "$f" || true; \
     done; \
     apt-get update \
-    && apt-get install -y --no-install-recommends ripgrep ca-certificates \
+    && apt-get install -y --no-install-recommends ripgrep ca-certificates wget jq aria2 \
     && rm -rf /var/lib/apt/lists/*
+
+# --- oniond: Volcengine TOS model/dataset downloader (onion-ai-data) ---------- #
+# The skill prefers oniond for external models/datasets (fast, TOS-local, no AK/SK), then
+# falls back to HF (hf-mirror) — see vendor/robot_sft/scripts/fetch.py. Install like
+# install_oniond.sh: pull the .deb from the ivolces extra-tools mirror (reachable from the CN
+# build pool), extract just the two binaries (skip its aria2-byted hard dep), and symlink
+# aria2c_byted -> aria2c. amd64-only, which the CUDA/linux base is.
+ARG ONIOND_MIRROR=http://mirrors.ivolces.com/extra-tools/debian
+ARG ONIOND_DEB=onion-ai-data_2.4.6_amd64.deb
+RUN cd /tmp \
+    && wget -q "${ONIOND_MIRROR}/pool/main/o/onion-ai-data/${ONIOND_DEB}" -O "${ONIOND_DEB}" \
+    && dpkg-deb -x "${ONIOND_DEB}" /tmp/onion-extract \
+    && cp /tmp/onion-extract/usr/bin/hfd /tmp/onion-extract/usr/bin/oniond /usr/local/bin/ \
+    && chmod +x /usr/local/bin/hfd /usr/local/bin/oniond \
+    && ln -sf /usr/bin/aria2c /usr/local/bin/aria2c_byted \
+    && rm -rf /tmp/onion-extract "/tmp/${ONIOND_DEB}" \
+    && oniond help >/dev/null 2>&1 || true
+# Default bucket for oniond list/download (override at runtime with -e BUCKET=...).
+ENV BUCKET=ai-infra
 
 # --- slim hermes in an isolated venv (its pins would clash with lerobot/torch) ---
 # Installed from PyPI mirrors — NO GitHub, so the CN build pool doesn't need
