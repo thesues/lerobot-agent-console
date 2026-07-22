@@ -65,3 +65,26 @@ User wants to train on a robot dataset
 - Always run preflight to verify memory before launching
 - PaliGemma tokenizer (`google/paligemma-3b-pt-224`) is gated — must accept license on HF
 - `hf auth login --token` has shell glob issues with `***` — use `export HF_TOKEN=...` instead
+
+### fp8 (float8) training — pi05 supported
+
+pi05 can train with fp8 matmuls via torchao. Its Gemma FFN layers
+(`...layers.N.mlp.gate_proj/up_proj/down_proj`) are swapped to fp8; attention q/k/v/o
+projections and the action heads stay bf16 (safer numerics). Enable with:
+
+```bash
+lerobot-train --policy.type=pi05 --policy.dtype=bfloat16 \
+  --use_float8=true --float8_recipe=rowwise \
+  --dataset.repo_id=<...> ...
+```
+
+- **Flag is `--use_float8=true`** (with optional `--float8_recipe=rowwise`). Keep
+  `--policy.dtype=bfloat16` — fp8 composes with bf16 autocast; master weights stay bf16.
+- **Hopper/Ada GPU only** — needs fp8 tensor cores: H20 / H100 / L40S (sm_89/90+). On an
+  **A30 (Ampere, sm_80) it errors out** ("fp8 training needs compute capability >= 8.9") —
+  do NOT pass `--use_float8` on the A30 nodes; train those in plain bf16.
+- Needs `torchao` in the image (baked into the current lerobot image via `[fp8]`).
+- Correctness is fine without `torch.compile`, but the throughput win is small until compile
+  is on — treat fp8 as "runs correctly now, faster once compiled".
+- On a startup log line `fp8: converted N nn.Linear layer(s)`, N>0 confirms it took effect;
+  `0 layers converted` means fp8 had no effect (wrong hardware or a frozen backbone).
