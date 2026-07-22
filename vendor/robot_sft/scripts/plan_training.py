@@ -167,20 +167,18 @@ def main() -> None:
                     help="command runner: 'uv' → 'uv run lerobot-train', "
                          "'python-module' → 'python -u -m lerobot.scripts.lerobot_train'")
     ap.add_argument("--float8", action="store_true",
-                    help="fp8 (float8) training via torchao. Adds --use_float8=true "
-                         "--float8_recipe=<recipe> and --policy.dtype=bfloat16. HOPPER/ADA GPUs "
-                         "ONLY (H20/H100/L40S, sm_89/90+) — on an A30 lerobot-train ERRORS out. "
-                         "Speeds up MLP/FFN GEMMs of VLA policies (pi0/pi05/...); safe no-op on "
-                         "conv/small policies. See references/policy_selection.md.")
+                    help="TEMPORARILY DISABLED. fp8 training is being reworked from torchao onto "
+                         "NVIDIA TransformerEngine (pi0/pi05 only). The old torchao path was "
+                         "removed from lerobot; passing --float8 now ERRORS instead of emitting "
+                         "dead flags. Train in bf16 until the TE path lands.")
     ap.add_argument("--float8-recipe", default="rowwise",
-                    choices=["rowwise", "tensorwise", "rowwise_with_gw_hp"],
-                    help="torchao float8 recipe (default rowwise: more accurate)")
-    ap.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True,
-                    help="torch.compile the policy (--policy.compile_model=true). Default ON — it "
-                         "is what turns fp8 into a real speedup, and helps bf16 too. Only added for "
-                         "policies that support it (pi0/pi05/pi0_fast/smolvla/diffusion); a no-op "
-                         "elsewhere. First step is slow (max-autotune warmup); amortized over a "
-                         "real run. Use --no-compile to disable.")
+                    help="(unused — fp8 temporarily disabled, see --float8)")
+    ap.add_argument("--compile", action=argparse.BooleanOptionalAction, default=False,
+                    help="torch.compile the policy (--policy.compile_model=true). Default OFF: "
+                         "MEASURED on pi05/H20 it gave NO steady-state speedup (1.61 vs 1.54 s/step) "
+                         "while adding a ~5 min first-step warmup — not worth it for these VLA "
+                         "models. Opt in for experiments. Only valid for pi0/pi05/pi0_fast/smolvla/"
+                         "diffusion.")
     ap.add_argument("--compile-mode", default=None,
                     help="torch.compile mode (default reduce-overhead: fast warm-up, most of the "
                          "win). Use max-autotune for a long run to squeeze the last bit — but on a "
@@ -282,11 +280,11 @@ def main() -> None:
     parts.append("--env_eval_freq=0")        # eval is out-of-band (eval_watcher on held-out episodes); flag is env_eval_freq, NOT eval_freq
     parts.append("--wandb.enable=false")
     if args.float8:
-        # fp8 composes with bf16 autocast (master weights stay bf16), so set dtype too. Only the
-        # MLP/FFN Linears get fp8; attention + heads stay bf16. Needs a Hopper/Ada GPU at runtime.
-        parts.append("--policy.dtype=bfloat16")
-        parts.append("--use_float8=true")
-        parts.append(f"--float8_recipe={args.float8_recipe}")
+        import sys as _sys
+        print("error: --float8 is temporarily disabled. The torchao fp8 path was removed from "
+              "lerobot and the TransformerEngine replacement (pi0/pi05) is not wired up yet. "
+              "Re-run without --float8 (bf16).", file=_sys.stderr)
+        _sys.exit(2)
 
     # torch.compile — ON by default. It's what makes fp8 a real speedup (fuses the quant/dequant
     # around the fp8 GEMMs) and helps bf16 too. Only pi0/pi05/pi0_fast/smolvla/diffusion expose a
@@ -310,9 +308,6 @@ def main() -> None:
     elif args.compile and compile_family and not compile_supported:
         print(f"note: --compile skipped — policy '{compile_family}' has no compile_model field.",
               file=_sys.stderr)
-    if args.float8 and not compile_on:
-        print("⚠ fp8 WITHOUT torch.compile gives little/no speedup (quant/dequant not fused). "
-              "Enable --compile on a compile-capable policy for the real win.", file=_sys.stderr)
 
     cuda = f"CUDA_VISIBLE_DEVICES={args.cuda} " if args.cuda else ""
     cmd = f"cd {args.repo} && {cuda}" + " \\\n  ".join(parts)
@@ -327,11 +322,10 @@ def main() -> None:
         "eval_cadence_note": eval_cadence_note,
         "output_dir": out_dir,
         "repo": args.repo,
-        "float8": args.float8,
-        "float8_recipe": args.float8_recipe if args.float8 else None,
+        "float8": False,  # fp8 temporarily disabled (torchao removed; TE port pending) — --float8 exits early
+        "float8_recipe": None,
         "compile": compile_on,
-        "compile_note": ("on (real fp8 speedup needs it)" if compile_on and args.float8
-                         else "on" if compile_on
+        "compile_note": ("on" if compile_on
                          else f"off — policy '{compile_family}' can't compile" if args.compile
                          else "off (--no-compile)"),
         "cuda_visible_devices": args.cuda,
@@ -386,8 +380,7 @@ def main() -> None:
         print(f"save_freq={save_freq}  log_freq={args.log_freq}  (checkpoints keep full "
               f"training state -> always resumable)")
         print(f"num_workers={num_workers}  ({workers_note})")
-        print(f"float8={'on (' + args.float8_recipe + ')' if args.float8 else 'off'}  "
-              f"compile={plan['compile_note']}")
+        print(f"compile={plan['compile_note']}")
         if train_eps is not None:
             print(f"train episodes: {len(train_eps)}  held-out eval episodes: "
                   f"{len(eval_eps or [])}")

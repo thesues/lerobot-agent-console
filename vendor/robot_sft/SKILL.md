@@ -215,22 +215,20 @@ Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. Th
     from a `tos://…/meta/info.json`), and with `--episodes-file` sizes the **train subset** — so
     you normally don't pass `--samples`/`--episodes` (they're optional overrides). The generated
     `lerobot-train` command already carries `--env_eval_freq=0` + `--policy.push_to_hub=false`.
-  - **torch.compile is ON by default** (`plan_training.py` adds `--policy.compile_model=true
-    --policy.compile_mode=reduce-overhead`). It's what turns fp8 into a real speedup — without it
-    the quant/dequant isn't fused and you get little/no gain — and it helps bf16 too. Only added
-    for policies that support it (pi0/pi05/pi0_fast/smolvla/diffusion); skipped (with a note) for
-    ACT etc. **Default mode is `reduce-overhead`, NOT the policies' own max-autotune default**: on
-    a 4B VLA max-autotune's kernel search warms up 10+ min (and uses more GPU memory), while
-    reduce-overhead compiles in ~a minute for most of the win; use `--compile-mode max-autotune`
-    on a long run to squeeze the last bit. **preflight strips compile** so the 2-step smoke isn't
-    swamped by warm-up. `--no-compile` to disable (plan_training then WARNS if `--float8` is on).
-  - **fp8 training:** add **`--float8`** to `plan_training.py` for a VLA policy (pi0/pi05/…) on a
-    **Hopper/Ada GPU (H20/H100, sm_89/90+)** — it appends `--use_float8=true --float8_recipe=rowwise
-    --policy.dtype=bfloat16` (and, with compile on by default, the real speedup). **NOT on A30**
-    (Ampere): lerobot-train ERRORS out (`compute capability >= 8.9`), so only pass it when
-    `check_hardware` reports an H20/Hopper card. preflight inherits it from the plan (`--session`) —
-    the smoke run uses the same fp8 config, so the memory estimate is accurate; watchdog resume
-    reloads it from the saved `train_config.json`. See `references/policy_selection.md`.
+  - **torch.compile is OFF by default.** MEASURED on pi05/H20 it gave NO steady-state speedup
+    (1.61 vs 1.54 s/step) while adding a ~5 min first-step warmup — not worth it for these VLA
+    models. Opt in with **`--compile`** for a VLA policy that supports it
+    (pi0/pi05/pi0_fast/smolvla/diffusion; skipped with a note for ACT etc.), which adds
+    `--policy.compile_model=true --policy.compile_mode=reduce-overhead`. **Default mode is
+    `reduce-overhead`, NOT the policies' own max-autotune default**: on a 4B VLA max-autotune's
+    kernel search warms up 10+ min (and uses more GPU memory), while reduce-overhead compiles in
+    ~a minute. Use `--compile-mode max-autotune` on a long run. **preflight strips compile** so the
+    2-step smoke isn't swamped by warm-up.
+  - **fp8 training — TEMPORARILY DISABLED.** The old torchao float8 path was removed from lerobot
+    (benchmarks showed bf16-no-compile was actually fastest, and fp8 used more memory). fp8 is being
+    reworked onto **NVIDIA TransformerEngine, scoped to pi0/pi05**. Until that lands, **`--float8`
+    (in both `plan_training.py` and `preflight.py`) ERRORS out** instead of emitting dead flags —
+    train in plain bf16. See `references/policy_selection.md`.
     **⚠️ Do NOT pass `--out` — argparse prefix-matches it to `--output-dir`, silently overriding
     the output-dir you set. Redirect stdout with `> file` instead.**
 - Checks **GPU count + free memory** (pick idle GPUs), **disk space** for checkpoints
