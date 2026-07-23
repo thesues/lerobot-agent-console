@@ -104,16 +104,18 @@ CHAT_DIRECTIVE = (
     "（否则 uv 会尝试联网重新同步依赖，很慢）。\n\n"
 )
 
-# Ark / Volcengine OpenAI-compatible endpoint and a sensible default model.
-DEFAULT_BASE_URL = os.environ.get("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
-DEFAULT_MODEL = os.environ.get("ARK_MODEL", "deepseek-v4-pro-260425")
-# Models offered in the chat header dropdown. All must be reachable at DEFAULT_BASE_URL
-# (Volcengine Ark) — doubao-* / deepseek-*. Override for your account with the ARK_MODELS
-# env (comma-separated). The currently-configured model is always added to the list.
-_DEFAULT_MODELS = [
-    "deepseek-v4-pro-260425",
-    "doubao-seed-2-0-pro-260215",
-]
+# SINGLE SOURCE OF TRUTH for the chat model + endpoint is hermes' config.yaml
+# (model.default / model.base_url), seeded once in the console Dockerfile via
+# `hermes config set ...`. server.py READS them from there — see read_chat_config().
+# These ENV vars are last-resort fallbacks ONLY, with NO hardcoded model/URL string in the
+# code: if hermes has no value and the env is unset, the field stays empty and the UI shows a
+# not-configured state (the key modal) instead of guessing a model.
+DEFAULT_BASE_URL = os.environ.get("ARK_BASE_URL", "")
+DEFAULT_MODEL = os.environ.get("ARK_MODEL", "")
+# The chat-header dropdown's *alternative* models come from the ARK_MODELS env (comma-separated),
+# set once in the console Dockerfile. The currently-configured hermes model is always added to the
+# list (see _model_choices), so the dropdown never hides what's actually in use.
+_ENV_MODELS = [m.strip() for m in os.environ.get("ARK_MODELS", "").split(",") if m.strip()]
 
 # Placeholder values that mean "no real key yet" — treat chat as not-ready.
 _PLACEHOLDERS = {"", "your-api-key", "changeme", "<set-me>", "null", "none"}
@@ -200,8 +202,12 @@ async def _hermes_config_set(key: str, value: str) -> None:
 async def set_volcano_key(api_key: str, base_url: str | None, model: str | None) -> None:
     """Point hermes chat at Volcengine Ark with the user's key. Chat-only."""
     await _hermes_config_set("model.provider", "custom")
-    await _hermes_config_set("model.base_url", base_url or DEFAULT_BASE_URL)
-    await _hermes_config_set("model.default", model or DEFAULT_MODEL)
+    # Only overwrite base_url/model when actually supplied (user field or env fallback) — otherwise
+    # keep whatever hermes already has (the Dockerfile seed), never clobbering it with an empty value.
+    if base_url or DEFAULT_BASE_URL:
+        await _hermes_config_set("model.base_url", base_url or DEFAULT_BASE_URL)
+    if model or DEFAULT_MODEL:
+        await _hermes_config_set("model.default", model or DEFAULT_MODEL)
     await _hermes_config_set("model.api_key", api_key)  # value comes from the user, not the repo
 
 
@@ -235,10 +241,9 @@ async def handle_version(_request: web.Request) -> web.Response:
 
 
 def _model_choices() -> list:
-    env = os.environ.get("ARK_MODELS", "").strip()
-    models = [m.strip() for m in env.split(",") if m.strip()] if env else list(_DEFAULT_MODELS)
-    cur = read_chat_config().get("model")
-    if cur and cur not in models:  # always offer the currently-configured model
+    models = list(_ENV_MODELS)  # alternatives from the ARK_MODELS env (set in the Dockerfile); may be empty
+    cur = read_chat_config().get("model")  # the hermes-configured model — always offered
+    if cur and cur not in models:
         models = [cur, *models]
     return models
 

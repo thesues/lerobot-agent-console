@@ -26,9 +26,18 @@ chat, a modal asks for your Ark API key. It is written to the hermes config and
 **only affects chat** — the terminal and everything else are untouched. Re-enter
 it any time via the ⚙ button in the chat header.
 
-Endpoint defaults to `https://ark.cn-beijing.volces.com/api/v3`, model
-`deepseek-v4-pro-260425` (both overridable in the modal's *Advanced* section
-or via `ARK_BASE_URL` / `ARK_MODEL`).
+The chat **model + endpoint are owned by hermes' `config.yaml`** — the single source of truth,
+seeded once in the console `Dockerfile` (`hermes config set model.default / model.base_url …`).
+`server.py` reads them (`/api/status`) and the frontend just displays what hermes reports — nothing
+in `server.py` / `index.html` / `app.js` hardcodes a model. To change the deployment default, edit
+that one Dockerfile block.
+
+- **Header dropdown** offers the preset alternatives from the `ARK_MODELS` env (also set in the
+  Dockerfile, comma-separated) plus whatever hermes currently uses; switching writes `model.default`.
+- **Add any model from the UI:** the ⚙ modal's *Advanced → 模型* field accepts an arbitrary model
+  name (with base URL); it's saved to hermes config (persisted on the PVC) and becomes active. It
+  shows in the dropdown while current; add it to `ARK_MODELS` to make it a permanent preset.
+- `ARK_BASE_URL` / `ARK_MODEL` env are last-resort fallbacks only (no hardcoded value in code).
 
 ## Run locally (dev)
 
@@ -50,7 +59,8 @@ Environment knobs:
 | `HERMES_BIN` | `hermes` | hermes executable |
 | `HERMES_CHAT_SKILL` | `robot_sft` | skill preloaded into chat (empty to disable) |
 | `HERMES_HOME` | `~/.hermes` | hermes config + session store location |
-| `ARK_BASE_URL` / `ARK_MODEL` | Ark Beijing / doubao | chat provider defaults |
+| `ARK_MODELS` | (Dockerfile) | comma-separated preset models for the chat dropdown; the live hermes model is always added |
+| `ARK_BASE_URL` / `ARK_MODEL` | unset | last-resort fallbacks for base_url/model when hermes config has none (no hardcoded value in code; real defaults live in hermes, seeded by the Dockerfile) |
 
 ## The robot_sft skill (requirement f)
 

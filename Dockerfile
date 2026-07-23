@@ -111,6 +111,13 @@ COPY hermes_session_api.py /opt/hermes/session_api.py
 # needs NO GitHub — see vendor/robot_sft.SOURCE for the upstream commit.
 COPY vendor ./vendor
 
+# SINGLE SOURCE OF TRUTH for the chat model + endpoint. The default model and base_url are seeded
+# into hermes' config.yaml below (server.py reads them from there via /api/status → the frontend
+# never hardcodes them). The chat-header dropdown's *alternative* models are the ONLY other place,
+# and they live here too, in one env var (server.py reads ARK_MODELS + always adds the live hermes
+# model). To change the model, edit this block only — nothing in server.py / index.html / app.js.
+ENV ARK_MODELS=doubao-seed-2-0-pro-260215,deepseek-v4-pro-260425
+
 # --- seed hermes config + bake the robot_sft skill INTO the image ----------- #
 # Drop the vendored skill into $HERMES_HOME/skills (hermes auto-discovers it),
 # then snapshot the seeded home to /opt/hermes-seed. At runtime a fresh PVC mount
@@ -121,7 +128,7 @@ RUN mkdir -p "${HERMES_HOME}/skills" \
     && cp -a /opt/agent-console/vendor/robot_sft "${HERMES_HOME}/skills/robot_sft" \
     && hermes config set model.provider custom \
     && hermes config set model.base_url https://ark.cn-beijing.volces.com/api/v3 \
-    && hermes config set model.default deepseek-v4-pro-260425 \
+    && hermes config set model.default doubao-seed-2-0-pro-260215 \
     && hermes skills list | grep -qi robot_sft \
     && cp -a "${HERMES_HOME}" /opt/hermes-seed
 
