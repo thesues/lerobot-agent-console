@@ -263,12 +263,25 @@ Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. Th
       get ZeRO-3. FSDP2 also rejects `fsdp_backward_prefetch`, which `dreamzero/fsdp.yaml` sets.
     - **`fsdp_use_orig_params: true` is REQUIRED** (lerobot builds the optimizer from
       `get_optim_params()` before `accelerator.prepare()`, so the parameter objects must survive).
-    - **`fsdp_transformer_layer_cls_to_wrap` is per-model.** pi0/pi05 have TWO stacks —
-      `paligemma.model.language_model.layers` and `gemma_expert.model.layers` — both
-      `GemmaDecoderLayer`. Never guess a class name: print it with
+    - **`fsdp_transformer_layer_cls_to_wrap` is per-model, and for pi0/pi05 it is
+      `_PiGemmaDecoderLayerBase` — NOT `GemmaDecoderLayer`.** lerobot subclasses the block
+      (`pi_gemma.py`), and both stacks (`paligemma.model.language_model.layers` and
+      `gemma_expert.model.layers`) are built from `PiGemmaModel`, so one entry covers both. The
+      class is defined INSIDE a factory function, so it is not importable and `dir(module)` will
+      not show it — accelerate matches on `type(m).__name__`, so the string still works. Confirm
+      against a live model rather than trusting any name (including this one):
       `type(policy.model.paligemma_with_expert.paligemma.model.language_model.layers[0]).__name__`.
       A working reference config for a different policy lives at
       `src/lerobot/policies/dreamzero/fsdp.yaml`.
+    - **`--policy.dtype=bfloat16` breaks FSDP1 wrapping: "Must flatten tensors with uniform
+      dtype".** `to_bfloat16_for_selected_params` casts the model to bf16 and then puts a few
+      names back to fp32 — and two of them, `input_layernorm` and `post_attention_layernorm`, sit
+      INSIDE each decoder layer. So the wrap unit holds bf16 attention/MLP weights next to fp32
+      norms, which FlatParameter refuses. `use_orig_params: true` does not help; the flatten
+      happens regardless. **Drop `--policy.dtype=bfloat16`** — the `float32` branch returns before
+      the fp32 override list is applied, so every parameter is uniformly fp32 — and let
+      `mixed_precision: bf16` in the accelerate config provide bf16 compute. That is the normal
+      FSDP arrangement anyway (fp32 master weights, bf16 compute).
     - Resume works and can change world size, but lerobot loads the FSDP optimizer state AFTER
       `prepare()` (`load_fsdp_optimizer_state`) — so a resume that skips that path silently starts
       with a fresh optimizer.
