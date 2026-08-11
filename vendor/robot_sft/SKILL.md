@@ -223,9 +223,22 @@ Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. Th
     from a `tos://…/meta/info.json`), and with `--episodes-file` sizes the **train subset** — so
     you normally don't pass `--samples`/`--episodes` (they're optional overrides). The generated
     `lerobot-train` command already carries `--env_eval_freq=0` + `--policy.push_to_hub=false`.
-  - **torch.compile is OFF by default.** MEASURED on pi05/H20 it gave NO steady-state speedup
-    (1.61 vs 1.54 s/step) while adding a ~5 min first-step warmup — not worth it for these VLA
-    models. Opt in with **`--compile`** for a VLA policy that supports it
+  - **torch.compile is OFF by default — because the warm-up is certain and the gain is not
+    measured, NOT because it "doesn't help".** The single observation behind this default is one
+    pi05/H20 run in `reduce-overhead` at one batch size: 1.61 s/step compiled vs 1.54 uncompiled,
+    plus a ~5 min first-step warm-up. That is one sample per arm with no repeat, a difference well
+    inside normal step-time jitter, and it was taken in the WEAKEST mode — `max-autotune`, the one
+    that actually searches kernels, was never measured. It also cannot separate "compile did
+    nothing" from "the step was dataloader-bound", which is easy to hit with a `tos://` streaming
+    dataset. **Do not repeat "torch.compile doesn't help VLAs" as a fact — it is not established.**
+    The default is OFF only because a guaranteed multi-minute warm-up should not be paid blind.
+    To settle it for a given setup, hold everything else fixed and: confirm the GPU is the
+    bottleneck FIRST (if `nvidia-smi` utilisation sits low you are timing the dataloader and
+    compile cannot show up), then take the median s/step over ≥50 steps AFTER warm-up (never
+    include the first step), run each arm twice, and compare three arms — off, `reduce-overhead`,
+    `max-autotune`. Amortise warm-up over the real run length: 10 min is noise on a 20-hour run
+    and fatal on a 30-minute one.
+    Opt in with **`--compile`** for a VLA policy that supports it
     (pi0/pi05/pi0_fast/smolvla/diffusion; skipped with a note for ACT etc.), which adds
     `--policy.compile_model=true --policy.compile_mode=reduce-overhead`. **Default mode is
     `reduce-overhead`, NOT the policies' own max-autotune default**: on a 4B VLA max-autotune's
