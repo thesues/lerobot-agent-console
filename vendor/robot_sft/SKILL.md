@@ -232,6 +232,36 @@ Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. Th
     kernel search warms up 10+ min (and uses more GPU memory), while reduce-overhead compiles in
     ~a minute. Use `--compile-mode max-autotune` on a long run. **preflight strips compile** so the
     2-step smoke isn't swamped by warm-up.
+  - **FSDP and fp8 do not currently work together — pick one.** A pi05 run with both reported a
+    Linear shape mismatch (7744 vs 524288) at model build. **The mechanism is NOT established**, so
+    do not repeat a cause for it; in particular `--fp8_enable_fsdp_float8_all_gather` is NOT it —
+    that flag lives on accelerate's `AORecipeKwargs` (**torchao**, FSDP2-only) and never touches
+    TE's state, and torchao is not even installed in this image (fp8 here is TE-only). The one
+    solid structural fact: pi05's fp8 replaces each of the 18 Gemma-2B VLM MLPs with a
+    `te.LayerNormMLP` whose weights and fp8 `_extra_state` belong together, so any wrap policy that
+    can split a module mid-way (notably `SIZE_BASED_WRAP`) is the wrong tool — use
+    `TRANSFORMER_BASED_WRAP`. Until someone reproduces it with a traceback: **run FSDP without
+    `--float8`, or fp8 without FSDP.**
+  - **How to train with FSDP:** lerobot supports it through accelerate and the repo documents it —
+    **`docs/source/multi_gpu_training.mdx` → "Training Large Models with FSDP"** is the reference
+    (launch command, minimal `fsdp.yaml`, and the checkpoint/resume semantics). Do not re-derive it.
+    What that page does not say, and matters here:
+    - **`SHARD_GRAD_OP` (= ZeRO-2) is usually enough.** The doc's sample uses `FULL_SHARD`
+      (ZeRO-3, also shards parameters). Sharding grads + optimizer state already removes the bulk
+      of the memory, without the per-forward parameter all-gather — and it keeps each TE module's
+      weights whole on every rank. Reach for `FULL_SHARD` only when the parameters themselves do
+      not fit.
+    - **`fsdp_use_orig_params: true` is REQUIRED** (lerobot builds the optimizer from
+      `get_optim_params()` before `accelerator.prepare()`, so the parameter objects must survive).
+    - **`fsdp_transformer_layer_cls_to_wrap` is per-model.** pi0/pi05 have TWO stacks —
+      `paligemma.model.language_model.layers` and `gemma_expert.model.layers` — both
+      `GemmaDecoderLayer`. Never guess a class name: print it with
+      `type(policy.model.paligemma_with_expert.paligemma.model.language_model.layers[0]).__name__`.
+      A working reference config for a different policy lives at
+      `src/lerobot/policies/dreamzero/fsdp.yaml`.
+    - Resume works and can change world size, but lerobot loads the FSDP optimizer state AFTER
+      `prepare()` (`load_fsdp_optimizer_state`) — so a resume that skips that path silently starts
+      with a fresh optimizer.
   - **fp8 training — NEVER enable it silently; ASK THE USER first.** fp8 is a *numerics* change,
     not a free speedup, and it has a downstream consequence that has already bitten us: the saved
     `config.json` carries `vlm_mlp_fp8_*` fields, so the checkpoint **fails to load on a lerobot
