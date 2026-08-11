@@ -246,20 +246,21 @@ Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. Th
     **`docs/source/multi_gpu_training.mdx` → "Training Large Models with FSDP"** is the reference
     (launch command, minimal `fsdp.yaml`, and the checkpoint/resume semantics). Do not re-derive it.
     What that page does not say, and matters here:
-    - **Everything here is FSDP*1*** — the doc's sample says so (`fsdp_version: 1`), and
-      accelerate 1.13 still defaults to 1 (`FSDP_VERSION` env, default `"1"`), which is why
-      `src/lerobot/policies/dreamzero/fsdp.yaml` works without naming a version.
-    - **`SHARD_GRAD_OP` (= ZeRO-2) is usually enough.** The doc's sample uses `FULL_SHARD`
-      (ZeRO-3, also shards parameters). Sharding grads + optimizer state already removes the bulk
-      of the memory, without the per-forward parameter all-gather — and it keeps each TE module's
-      weights whole on every rank. Reach for `FULL_SHARD` only when the parameters themselves do
-      not fit.
-      ⚠️ **That key is FSDP1-only.** Under `fsdp_version: 2` accelerate deprecates
-      `sharding_strategy` in favour of `reshard_after_forward` (ZeRO-2 = `false`, ZeRO-3 =
-      `true`), and it only *warns* — so a `SHARD_GRAD_OP` line carried into an FSDP2 config
-      silently does nothing and you get ZeRO-3 behaviour. FSDP2 also **rejects**
-      `fsdp_backward_prefetch`, which `dreamzero/fsdp.yaml` sets, so that file is not
-      version-portable either.
+    - **Use FSDP1** (`fsdp_version: 1`). It is what the doc targets, what accelerate 1.13 still
+      defaults to, and the only version with a run that worked here. FSDP2 exists (torch 2.11 has
+      `fully_shard`) but nothing in this repo has been proven on it.
+    - **Pick the sharding strategy by whether the PARAMETERS fit:**
+      - **`SHARD_GRAD_OP`** (ZeRO-2) — shards gradients + optimizer state. **Enough for pi05**
+        (3B). One all-gather per unit per step instead of two, and each TE module's weights stay
+        whole through forward/backward.
+      - **`FULL_SHARD`** (ZeRO-3) — also shards parameters. For models whose weights alone do not
+        fit; `src/lerobot/policies/dreamzero/fsdp.yaml` uses it for DreamZero (16.5B).
+      Note it is **not** textbook ZeRO-2: parameters are still sharded at rest and merely stay
+      gathered between forward and backward, so it costs less memory than DeepSpeed ZeRO-2 would.
+      ⚠️ `sharding_strategy` is the **FSDP1 spelling**. FSDP2 spells the same choice
+      `reshard_after_forward` (`false` = ZeRO-2, `true` = ZeRO-3) and only *warns* about the old
+      key — so a `SHARD_GRAD_OP` line carried into an FSDP2 config silently does nothing and you
+      get ZeRO-3. FSDP2 also rejects `fsdp_backward_prefetch`, which `dreamzero/fsdp.yaml` sets.
     - **`fsdp_use_orig_params: true` is REQUIRED** (lerobot builds the optimizer from
       `get_optim_params()` before `accelerator.prepare()`, so the parameter objects must survive).
     - **`fsdp_transformer_layer_cls_to_wrap` is per-model.** pi0/pi05 have TWO stacks —
