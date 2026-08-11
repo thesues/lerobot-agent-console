@@ -193,15 +193,10 @@ def main() -> None:
                          "float8_block_scaling: block-wise (1D row-wise for activations/grads, "
                          "2D tiles for weights) — the TE analogue of the old torchao 'rowwise'.")
     ap.add_argument("--compile", action=argparse.BooleanOptionalAction, default=False,
-                    help="torch.compile the policy (--policy.compile_model=true). Default OFF "
-                         "because the warm-up is certain and the gain is unmeasured — NOT because "
-                         "compile is known not to help. The one data point is a single pi05/H20 "
-                         "run in reduce-overhead: 1.61 s/step compiled vs 1.54 uncompiled (one "
-                         "sample per arm, difference within step-time jitter, weakest mode, and "
-                         "possibly dataloader-bound) plus ~5 min first-step warm-up. To decide "
-                         "for your setup, compare off / reduce-overhead / max-autotune on median "
-                         "s/step over >=50 post-warm-up steps. Only valid for pi0/pi05/pi0_fast/"
-                         "smolvla/diffusion.")
+                    help="torch.compile the policy (--policy.compile_model=true). Default OFF: it "
+                         "costs a multi-minute first-step warm-up, and the speedup for a given "
+                         "run has not been established here — measure before claiming either way. "
+                         "Only valid for pi0/pi05/pi0_fast/smolvla/diffusion.")
     ap.add_argument("--compile-mode", default=None,
                     help="torch.compile mode (default reduce-overhead: fast warm-up, most of the "
                          "win). Use max-autotune for a long run to squeeze the last bit — but on a "
