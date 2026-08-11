@@ -246,11 +246,20 @@ Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. Th
     **`docs/source/multi_gpu_training.mdx` → "Training Large Models with FSDP"** is the reference
     (launch command, minimal `fsdp.yaml`, and the checkpoint/resume semantics). Do not re-derive it.
     What that page does not say, and matters here:
+    - **Everything here is FSDP*1*** — the doc's sample says so (`fsdp_version: 1`), and
+      accelerate 1.13 still defaults to 1 (`FSDP_VERSION` env, default `"1"`), which is why
+      `src/lerobot/policies/dreamzero/fsdp.yaml` works without naming a version.
     - **`SHARD_GRAD_OP` (= ZeRO-2) is usually enough.** The doc's sample uses `FULL_SHARD`
       (ZeRO-3, also shards parameters). Sharding grads + optimizer state already removes the bulk
       of the memory, without the per-forward parameter all-gather — and it keeps each TE module's
       weights whole on every rank. Reach for `FULL_SHARD` only when the parameters themselves do
       not fit.
+      ⚠️ **That key is FSDP1-only.** Under `fsdp_version: 2` accelerate deprecates
+      `sharding_strategy` in favour of `reshard_after_forward` (ZeRO-2 = `false`, ZeRO-3 =
+      `true`), and it only *warns* — so a `SHARD_GRAD_OP` line carried into an FSDP2 config
+      silently does nothing and you get ZeRO-3 behaviour. FSDP2 also **rejects**
+      `fsdp_backward_prefetch`, which `dreamzero/fsdp.yaml` sets, so that file is not
+      version-portable either.
     - **`fsdp_use_orig_params: true` is REQUIRED** (lerobot builds the optimizer from
       `get_optim_params()` before `accelerator.prepare()`, so the parameter objects must survive).
     - **`fsdp_transformer_layer_cls_to_wrap` is per-model.** pi0/pi05 have TWO stacks —
