@@ -2,12 +2,11 @@
 # whose only real difference is the name — dev and test were byte-identical apart from that,
 # which is the whole reason this is one chart instead of two manifests kept in sync by hand.
 
-# Pinned, NOT derived from the release name. The chart is named after the product
-# (lerobot-agent-console) but the running resources are `lerobot-console` — so leaving this
-# empty would make `helm install lerobot-agent-console <chart>`, the obvious command, stand up
-# a SECOND console under the wrong name instead of adopting the real one. These are two fixed
-# environments, not arbitrary releases; spell them out.
-nameOverride: lerobot-console
+# Pinned, NOT derived from the release name — these are two fixed environments, not arbitrary
+# releases, and the resource name determines the PVC name (hermes-home-<name>-0) and the pod
+# DNS the multi-node training addresses. Changing it strands the old disk and creates an empty
+# one, so it must never drift by accident.
+nameOverride: lerobot-agent-console
 
 image:
   repository: iaas-us-cn-beijing.cr.volces.com/physicalai/lerobot-agent-console
