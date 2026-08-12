@@ -196,6 +196,12 @@ ENV ARK_MODELS=doubao-seed-evolving,deepseek-v4-pro-260425
 ARG NODE_VERSION=v22.16.0
 ARG NODE_MIRROR=https://mirrors.volces.com/nodejs-release
 ARG NPM_MIRROR=https://registry.npmmirror.com
+# Chrome itself is the remaining slow download: agent-browser pulls Chrome-for-Testing through
+# @puppeteer/browsers, which fetches from storage.googleapis.com. PUPPETEER_DOWNLOAD_BASE_URL
+# redirects that at npmmirror's mirror of the same tree (verified to carry the exact build the
+# installer asks for). If a future Chrome build is ever missing there the download falls back
+# to being slow, not broken — the `test -e agent-browser` gate below still decides the build.
+ARG CHROME_MIRROR=https://registry.npmmirror.com/-/binary/chrome-for-testing
 
 # Then snapshot the seeded home (config + the symlink) to /opt/hermes-seed for the
 # fresh-PVC path. NO GitHub at build OR runtime.
@@ -213,6 +219,7 @@ RUN mkdir -p "${HERMES_HOME}/skills" \
     && rm -f /tmp/node.tar.xz \
     && "${HERMES_HOME}/node/bin/node" --version \
     && PATH="${HERMES_HOME}/node/bin:${PATH}" NPM_CONFIG_REGISTRY="${NPM_MIRROR}" \
+       PUPPETEER_DOWNLOAD_BASE_URL="${CHROME_MIRROR}" \
        bash "$(/opt/hermes/.venv/bin/python -c 'import hermes_cli,pathlib;print(pathlib.Path(hermes_cli.__file__).parent/"scripts"/"install.sh")')" \
          --ensure browser \
     && test -x "${HERMES_HOME}/node/bin/node" \
