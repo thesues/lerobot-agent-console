@@ -1,0 +1,4 @@
+# The TEST console. Deliberately minimal: if something other than the name needs to differ,
+# think twice — the two environments being identical is what makes test meaningful.
+# Reuses the dev login Secret; its own PVC comes from its own StatefulSet.
+nameOverride: lerobot-console-test

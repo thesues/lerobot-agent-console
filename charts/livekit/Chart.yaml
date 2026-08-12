@@ -1,0 +1,6 @@
+apiVersion: v2
+name: livekit
+description: Self-hosted LiveKit SFU on its own public CLB, for WebRTC teleoperation.
+type: application
+version: 0.1.0
+appVersion: "1.0"

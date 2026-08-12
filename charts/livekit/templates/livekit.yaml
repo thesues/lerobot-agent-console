@@ -1,0 +1,73 @@
+{{/* Self-hosted LiveKit SFU. The Mac daemon (home robot) and the in-pod controller both DIAL
+     OUT to it, which sidesteps home/cloud symmetric NAT — only the CLB needs inbound. */}}
+{{- $name := default .Release.Name .Values.nameOverride -}}
+{{- if not .Values.nodeIp }}
+{{- fail "livekit: nodeIp is required — set it to the CLB's PUBLIC IP (kubectl get svc <name>-clb -o jsonpath='{.status.loadBalancer.ingress[0].ip}'). Without it ICE hands clients an unroutable address and media never connects." }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-config
+  labels: { app: {{ $name }} }
+data:
+  config.yaml: |
+    port: {{ .Values.service.ports.signal }}
+    log_level: info
+    rtc:
+      tcp_port: {{ .Values.service.ports.rtcTcp }}
+      udp_port: {{ .Values.service.ports.rtcUdp }}
+      use_external_ip: false   # the public IP comes from --node-ip, not STUN
+    # no `keys:` block on purpose — LIVEKIT_KEYS (from the Secret) supplies them
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels: { app: {{ $name }} }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: {{ $name }} }
+  template:
+    metadata:
+      labels: { app: {{ $name }} }
+    spec:
+      containers:
+        - name: livekit
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config", "/etc/livekit/config.yaml", "--node-ip", {{ .Values.nodeIp | quote }}]
+          env:
+            {{/* NOT optional: a missing Secret must hold the pod in
+                 CreateContainerConfigError rather than start a public SFU with no credentials. */}}
+            - name: LIVEKIT_KEYS
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.auth.secretName }}, key: {{ .Values.auth.secretKey }} }
+          ports:
+            - { containerPort: {{ .Values.service.ports.signal }} }
+            - { containerPort: {{ .Values.service.ports.rtcTcp }} }
+            - { containerPort: {{ .Values.service.ports.rtcUdp }}, protocol: UDP }
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/livekit }
+      volumes:
+        - name: config
+          configMap: { name: {{ $name }}-config }
+---
+{{/* Owns a CLB with a dedicated public IP. Separate from the console, which is on APIG. */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-clb
+  labels: { app: {{ $name }} }
+  annotations:
+    service.beta.kubernetes.io/volcengine-loadbalancer-subnet-id: {{ .Values.service.subnetId | quote }}
+    service.beta.kubernetes.io/volcengine-loadbalancer-address-type: {{ .Values.service.addressType | quote }}
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Cluster
+  selector: { app: {{ $name }} }
+  ports:
+    - { name: signal,  port: {{ .Values.service.ports.signal }}, protocol: TCP, targetPort: {{ .Values.service.ports.signal }} }
+    - { name: rtc-tcp, port: {{ .Values.service.ports.rtcTcp }}, protocol: TCP, targetPort: {{ .Values.service.ports.rtcTcp }} }
+    - { name: rtc-udp, port: {{ .Values.service.ports.rtcUdp }}, protocol: UDP, targetPort: {{ .Values.service.ports.rtcUdp }} }

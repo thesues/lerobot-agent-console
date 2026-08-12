@@ -1,0 +1,35 @@
+nameOverride: ""
+
+image:
+  repository: docker.m.daocloud.io/livekit/livekit-server   # daocloud mirror (CN)
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# ⚠️ The ICE candidate address clients are told to connect to. It must be the CLB's PUBLIC IP,
+# not a pod/node IP, or media never establishes. Look it up AFTER the Service gets its IP:
+#   kubectl get svc livekit-clb -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+# and pass it with --set nodeIp=<ip>. There is no sane default, so the chart fails without it.
+nodeIp: ""
+
+# Credentials come from a Secret, by environment — never from the ConfigMap below. LIVEKIT_KEYS
+# overrides config.yaml's `keys` block, and this chart deliberately ships NO fallback: the SFU
+# is on a public CLB, so any key written into a committed file is public knowledge. A missing
+# Secret must stop the pod rather than expose the server.
+#   kubectl create secret generic livekit-auth --from-literal=keys='<api_key>: <api_secret>'
+auth:
+  secretName: livekit-auth
+  secretKey: keys
+
+service:
+  # The CLB is created FROM this subnet id. Changing it provisions a NEW load balancer with a
+  # NEW public IP, which invalidates every client's --livekit-url. Treat it as immutable.
+  subnetId: subnet-13g74uz5gigw03n6nu4qbfl9s
+  addressType: internet
+  ports:
+    signal: 7880    # WS signaling
+    rtcTcp: 7881    # WebRTC over TCP (fallback)
+    rtcUdp: 7882    # WebRTC media (primary)
+
+resources:
+  requests: { cpu: 200m, memory: 256Mi }
+  limits:   { cpu: "1",  memory: 1Gi }

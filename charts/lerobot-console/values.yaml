@@ -1,0 +1,52 @@
+# Defaults describe the DEV console. The test console is the same chart with values-test.yaml,
+# whose only real difference is the name — dev and test were byte-identical apart from that,
+# which is the whole reason this is one chart instead of two manifests kept in sync by hand.
+
+nameOverride: ""            # release name is used when empty
+
+image:
+  repository: iaas-us-cn-beijing.cr.volces.com/physicalai/lerobot-agent-console
+  tag: 34eaaecfec0798be6db319a3675076d6876a989c   # keep in sync with what is deployed
+  pullPolicy: IfNotPresent
+
+# Both consoles are pinned to the H20 box. ebs-* volumes are ZONAL, so a PVC bound in another
+# zone can never attach here — moving nodes means recreating the PVC empty.
+nodeSelector:
+  kubernetes.io/hostname: "192.168.1.2"
+
+resources:
+  requests: { cpu: "16", memory: 128Gi, nvidia.com/gpu: "1" }
+  limits:   { cpu: "16", memory: 128Gi, nvidia.com/gpu: "1" }
+
+# RDMA pins (mlocks) memory; the container default `ulimit -l` is 64 KB with an equal hard
+# limit, so NCCL picks the RoCE NIC and then fails to allocate. CAP_IPC_LOCK is the k8s fix.
+capabilities: ["IPC_LOCK"]
+
+persistence:
+  storageClass: ebs-essd
+  # ⚠️ MUST match the live StatefulSet: volumeClaimTemplates is IMMUTABLE, so `helm upgrade`
+  # on the existing consoles fails if this differs. The live templates say 128Gi even though
+  # the bound PVCs were resized to 1Ti by editing the PVCs directly (which does not, and
+  # cannot, update the template). Raise this only for a fresh install — see charts/README.md.
+  size: 128Gi
+
+# /dev/shm for the PyTorch DataLoader. The 64Mi container default overflows ("Bus error" /
+# "out of shared memory") and the container cannot remount it without CAP_SYS_ADMIN.
+dshmSize: 32Gi
+
+auth:
+  secretName: lerobot-console-auth   # keys: user, password. NOT created by this chart.
+
+env:
+  # An ORDERED LIST, not a map: Helm's `range` sorts map keys, and reordering container env
+  # changes the pod-template hash — which would restart both consoles on the first upgrade for
+  # no reason. Keep this in the same order as the running StatefulSets.
+  - { name: PORT, value: "8080" }
+  - { name: CONSOLE_WORKDIR, value: /lerobot }        # the lerobot checkout in the image
+  - { name: CONSOLE_SHELL, value: /bin/bash }
+  # lerobot 0.6.x hard-errors if LEROBOT_HOME is set at all; HF_LEROBOT_HOME is the right var,
+  # and it must point at the writable PVC (the image default is unreadable as root).
+  - { name: HF_LEROBOT_HOME, value: /opt/data/.cache/huggingface/lerobot }
+  - { name: HOME, value: /opt/data }                  # image default is 700, owned by another user
+  - { name: HERMES_CHAT_SKILL, value: robot_sft }
+  - { name: HERMES_HOME, value: /opt/data }
