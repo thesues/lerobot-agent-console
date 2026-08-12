@@ -44,9 +44,28 @@ if [ -x /usr/sbin/sshd ]; then
 fi
 
 # Fresh PVC (no config yet) → seed config + skill from the baked image snapshot.
+#
+# Why a snapshot exists at all, when the build installs into HERMES_HOME directly: by the time
+# this script runs the PVC is ALREADY mounted over /opt/data, so the image's own copy of that
+# path is unreachable. $SEED is the same content at a path the mount cannot shadow.
 if [ ! -s "$HERMES_HOME/config.yaml" ] && [ -d "$SEED" ]; then
   echo "==> seeding HERMES_HOME from baked snapshot (offline)"
   cp -a "$SEED/." "$HERMES_HOME/"
+fi
+
+# Node + browser seed on their OWN condition — presence, not "is this a fresh PVC".
+# Gating them on config.yaml would skip every volume created before this image: those have a
+# config.yaml, so the block above never fires, yet they have no node — and hermes goes back to
+# downloading ~384 MB on the first message (2m34s from CN, the thing this exists to prevent).
+# Tested the way hermes tests them: node by its binary (shutil.which), the browser by its
+# browsers dir (dep_ensure._has_hermes_agent_browser).
+if [ -x "$SEED/node/bin/node" ] && [ ! -x "$HERMES_HOME/node/bin/node" ]; then
+  echo "==> seeding node from baked snapshot (offline)"
+  cp -a "$SEED/node" "$HERMES_HOME/"
+fi
+if [ -d "$SEED/.agent-browser/browsers" ] && [ ! -d "$HERMES_HOME/.agent-browser/browsers" ]; then
+  echo "==> seeding agent-browser + Chromium from baked snapshot (offline)"
+  cp -a "$SEED/.agent-browser" "$HERMES_HOME/"
 fi
 
 # Enforce console policy on EVERY boot. config.yaml lives on the PVC and SHADOWS the image seed,
