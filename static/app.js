@@ -11,6 +11,32 @@
   const wsURL = (p) => (location.protocol === "https:" ? "wss://" : "ws://") + location.host + p;
   let sessionActive = false;   // single-session lock: only reconnect WS while we hold it
 
+  /* --------------------------------------------------------------- theme */
+  // Two looks: `arco` (matches the Volcengine console) and `classic` (this app's own earlier
+  // identity). The choice is a per-browser preference, so it lives in localStorage — not on the
+  // PVC, where it would follow the pod rather than the person. <head> already applied the stored
+  // value before first paint; this only wires the buttons and keeps them in sync.
+  (function themeSwitch() {
+    const KEY = "console-theme";
+    const root = document.documentElement;
+    const sw = $("theme-switch");
+    if (!sw) return;
+    const paint = (t) => sw.querySelectorAll("[data-theme-opt]").forEach((b) =>
+      b.classList.toggle("on", b.dataset.themeOpt === t));
+    paint(root.dataset.theme || "arco");
+    sw.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-theme-opt]");
+      if (!b) return;
+      const t = b.dataset.themeOpt;
+      root.dataset.theme = t;
+      try { localStorage.setItem(KEY, t); } catch (_) {}
+      paint(t);
+      // The terminal is a canvas, not DOM — its colours come from the xterm theme object, so a
+      // CSS variable change does not reach it. Nothing to repaint here; the panels around it do
+      // follow, which is the visible part.
+    });
+  })();
+
   /* ------------------------------------------------------- terminal (tabbed) */
   // Each tab is its own PTY: a /ws/term connection forks a fresh shell server-side,
   // so tabs are fully independent. The manager owns xterm instances + their sockets.

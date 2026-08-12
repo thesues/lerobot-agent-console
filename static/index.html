@@ -6,6 +6,12 @@
   <title>LeRobot · Agent Console</title>
   <link rel="stylesheet" href="/static/vendor/xterm.css" />
   <link rel="stylesheet" href="/static/style.css" />
+  <script>
+    // Applied BEFORE the stylesheet paints. In app.js this would run after first paint and the
+    // page would flash the default theme on every load for anyone using the other one.
+    try { document.documentElement.dataset.theme =
+            localStorage.getItem("console-theme") === "classic" ? "classic" : "arco"; } catch (_) {}
+  </script>
 </head>
 <body>
   <!-- Top bar -->
@@ -19,6 +25,10 @@
     <!-- No connection pill here: it was static markup, so the dot was green and the text said
          "已连接" even when nothing was. The live indicator is #chat-status in the chat header,
          which app.js actually drives. -->
+    <div class="theme-switch" id="theme-switch" role="group" aria-label="主题">
+      <button class="theme-opt" data-theme-opt="arco" type="button">Arco</button>
+      <button class="theme-opt" data-theme-opt="classic" type="button">经典</button>
+    </div>
   </header>
 
   <main class="grid" id="grid">
