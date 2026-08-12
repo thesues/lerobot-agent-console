@@ -277,12 +277,24 @@ def cmd_check(a) -> int:
     #    surfaces as an NCCL timeout on the WORKER, sending you to debug the wrong node.
     if a.output_dir and a.steps and a.save_freq:
         need = (a.steps // max(1, a.save_freq) + 1) * a.ckpt_gb
-        rc, out = run_local(f"df -BG --output=avail {shlex.quote(os.path.dirname(a.output_dir))} "
-                            "| tail -1 | tr -dc '0-9'")
+        # df needs a path that EXISTS. output_dir is created by the run, and its parent usually
+        # does not exist yet either (the whole tree is new), so probing dirname() alone made df
+        # error out, `avail` fall back to -1, and the gate fail with a nonsense "-1G free" —
+        # a preflight that cries wolf gets ignored, which defeats the point. Walk up to the
+        # nearest existing ancestor: that is the filesystem the checkpoints will land on.
+        probe = os.path.dirname(os.path.abspath(a.output_dir)) or "/"
+        rc, out = run_local(
+            f'p={shlex.quote(probe)}; while [ ! -e "$p" ] && [ "$p" != / ]; do p=$(dirname "$p"); done; '
+            "df -BG --output=avail \"$p\" | tail -1 | tr -dc '0-9'")
         avail = int(out) if out.strip().isdigit() else -1
-        r.check(f"master: checkpoint disk budget (~{need}G needed, {avail}G free)",
-                avail >= need,
-                "master fills up mid-save -> looks like a worker NCCL timeout, not a disk error")
+        if avail < 0:
+            # Unknown != insufficient. Say which one it is instead of reporting a fake number.
+            r.check(f"master: checkpoint disk budget (~{need}G needed)", False,
+                    f"could not read free space for {probe} (df said: {out.strip() or 'nothing'})")
+        else:
+            r.check(f"master: checkpoint disk budget (~{need}G needed, {avail}G free)",
+                    avail >= need,
+                    "master fills up mid-save -> looks like a worker NCCL timeout, not a disk error")
 
     # 10. rendezvous port free on the master
     rc, out = run_local(f"ss -ltn 2>/dev/null | grep -w {a.port} || true")

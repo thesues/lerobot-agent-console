@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import fcntl
 import hmac
 import json
@@ -789,12 +790,47 @@ async def _handle_session_op(ws: web.WebSocketResponse, acp: "HermesACP", op: st
         await ws.send_json({"type": "history_done", "id": sid})
 
 
+# Seconds to wait for the user to answer an approval prompt. Must be BELOW hermes'
+# agent.approval.timeout (the entrypoint raises that to 900s) so hermes never gives up first
+# and auto-denies behind the user's back.
+PERM_TIMEOUT = int(os.environ.get("CONSOLE_PERM_TIMEOUT", "870"))
+
 async def handle_chat(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse(heartbeat=30, max_msg_size=8 * 1024 * 1024)
     await ws.prepare(request)
     acp: HermesACP = request.app["acp"]
-    perm_waiters: dict[str, asyncio.Future] = {}
     turn: dict[str, asyncio.Task | None] = {"task": None}
+
+    # A pending permission must OUTLIVE the socket that asked about it.
+    #
+    # These used to be locals, and that was the whole "the console froze and then said I denied
+    # something I never saw" failure: hermes blocks its agent thread waiting for the answer, the
+    # request was pushed to one specific socket, and the future to resolve lived in that
+    # handler's frame. Reload the page and BOTH vanish — the new page has no idea an approval is
+    # outstanding, and a click could not reach the future even if it did. hermes then hits its
+    # own timeout, records "denied by ACP client", and until that fires every prompt the user
+    # types comes back "Queued for the next turn" because hermes is still mid-turn.
+    #
+    # So the pending set and the live socket set are app-level: a request is broadcast to
+    # whoever is connected, replayed to whoever connects next, and answerable from any of them.
+    sockets: set = request.app.setdefault("chat_sockets", set())
+    pending: dict[str, dict] = request.app.setdefault("perm_pending", {})
+    sockets.add(ws)
+
+    async def broadcast(msg: dict) -> None:
+        for sock in list(sockets):
+            if sock.closed:
+                sockets.discard(sock)
+                continue
+            try:
+                await sock.send_json(msg)
+            except Exception:  # noqa: BLE001
+                sockets.discard(sock)
+
+    # Replay anything still awaiting an answer, so a reconnecting page is not silently stuck.
+    for entry in list(pending.values()):
+        with contextlib.suppress(Exception):
+            await ws.send_json(entry["msg"])
 
     async def on_update(u: dict) -> None:
         kind = u.get("sessionUpdate")
@@ -809,18 +845,29 @@ async def handle_chat(request: web.Request) -> web.WebSocketResponse:
 
     async def on_permission(params: dict):
         # Ask the user (no --yolo): forward options, await their pick.
-        req_id = params.get("toolCall", {}).get("toolCallId") or str(len(perm_waiters))
-        fut = asyncio.get_event_loop().create_future()
-        perm_waiters[req_id] = fut
-        await ws.send_json({"type": "permission", "reqId": req_id,
-                            "title": params.get("toolCall", {}).get("title", "请求授权"),
-                            "options": params.get("options", [])})
+        req_id = params.get("toolCall", {}).get("toolCallId") or str(len(pending))
+        fut = asyncio.get_running_loop().create_future()
+        msg = {"type": "permission", "reqId": req_id,
+               "title": params.get("toolCall", {}).get("title", "请求授权"),
+               "options": params.get("options", [])}
+        pending[req_id] = {"msg": msg, "fut": fut}
+        log.info("permission requested: %s (%d option(s))", msg["title"], len(msg["options"]))
+        await broadcast(msg)
         try:
-            return await asyncio.wait_for(fut, timeout=300)
+            # MUST stay under hermes' own approval timeout (agent.approval.timeout, which the
+            # entrypoint raises from its 60s default). If ours were the longer one — it used to
+            # be 300s against hermes' 60s — hermes would give up first and auto-deny, and the
+            # button the user finally clicked would resolve a future nobody was listening to.
+            return await asyncio.wait_for(fut, timeout=PERM_TIMEOUT)
         except asyncio.TimeoutError:
+            log.warning("permission timed out after %ss: %s", PERM_TIMEOUT, msg["title"])
+            # Say so. Silence here is what made hermes' "User denied this command" look like
+            # the console lying about what the user did.
+            await broadcast({"type": "notice", "text":
+                             f"授权请求超时({PERM_TIMEOUT}s),已按拒绝处理:{msg['title']}"})
             return None
         finally:
-            perm_waiters.pop(req_id, None)
+            pending.pop(req_id, None)
 
     async def _kill_turn(reselect: bool, grace: float = 12.0) -> bool:
         """Reliably end the in-flight turn. Try graceful session/cancel first; if hermes
@@ -890,9 +937,9 @@ async def handle_chat(request: web.Request) -> web.WebSocketResponse:
                 continue
             ptype = payload.get("type")
             if ptype == "permission_response":
-                fut = perm_waiters.get(payload.get("reqId"))
-                if fut and not fut.done():
-                    fut.set_result(payload.get("optionId"))
+                entry = pending.get(payload.get("reqId"))
+                if entry and not entry["fut"].done():
+                    entry["fut"].set_result(payload.get("optionId"))
                 continue
             if ptype == "stop":
                 # Reliably interrupt (graceful cancel, else hard-restart) so the turn really
@@ -943,6 +990,15 @@ async def handle_chat(request: web.Request) -> web.WebSocketResponse:
             text = (payload.get("text") or "").strip()
             if not text:
                 continue
+            if pending:
+                # Dropping this silently is what "我输入任何 command 都不响应" was: hermes cannot
+                # start anything new while it blocks on the approval, so re-surface the request
+                # (the page may have reloaded since it was sent) and say why nothing happened.
+                await ws.send_json({"type": "notice", "text":
+                                    "有一个授权请求正在等待你的回答,先点上面的按钮。"})
+                for entry in list(pending.values()):
+                    await ws.send_json(entry["msg"])
+                continue
             if turn["task"] and not turn["task"].done():
                 continue  # a turn is already running (UI shows stop, not send)
             if not read_chat_config()["chat_ready"]:
@@ -951,6 +1007,7 @@ async def handle_chat(request: web.Request) -> web.WebSocketResponse:
             # Run the turn as a task so this loop keeps reading (stop / permission).
             turn["task"] = asyncio.create_task(run_turn(text))
     finally:
+        sockets.discard(ws)
         t = turn["task"]
         if t and not t.done():
             t.cancel()

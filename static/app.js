@@ -538,8 +538,24 @@
     if (t.title) setRunStatus(t.title.length > 40 ? t.title.slice(0, 40) + "…" : t.title);
     body.scrollTop = body.scrollHeight;
   }
+  const permShown = new Set();
   function addPermission(m) {
+    // The server REPLAYS outstanding requests (on reconnect, and when you type while one is
+    // waiting), so the same reqId can arrive more than once. Render it once; if it is already
+    // on screen just bring it back into view.
+    if (m.reqId && permShown.has(m.reqId)) {
+      const prev = document.querySelector(`[data-perm-req="${CSS.escape(m.reqId)}"]`);
+      if (prev) { prev.scrollIntoView({ block: "nearest" }); return; }
+    }
+    if (m.reqId) permShown.add(m.reqId);
+    // Close the streaming segment and drop the "思考中" placeholder first. Otherwise the turn
+    // still looks like it is waiting on the MODEL, when it is actually waiting on YOU — that
+    // reading is what kept the approval from being answered until it timed out.
+    finalizeSeg();
+    clearPending();
+    setRunStatus("等待你的授权");
     const bubble = addMsg("bot", "");
+    if (m.reqId) bubble.dataset.permReq = m.reqId;
     bubble.classList.add("perm");
     bubble.textContent = "⚠️ 需要授权：" + (m.title || "");
     const box = document.createElement("div");

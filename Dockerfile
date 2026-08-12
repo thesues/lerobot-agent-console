@@ -159,6 +159,11 @@ RUN /opt/hermes/.venv/bin/python scripts/patch_acp_logging.py
 # present-but-None value bypasses the "" default), so `final_response.startswith(...)` raises
 # 'NoneType' has no attribute 'startswith' -> "Internal error" -> stuck chat. Coerce to "".
 RUN /opt/hermes/.venv/bin/python scripts/patch_acp_interrupt.py
+# A tool that needs approval blocks hermes' agent thread, and that wait was a hardcoded 60s —
+# short enough that stepping away turned into "BLOCKED: User denied this command" for a prompt
+# the user never saw. Makes it env-tunable (default 900s); the console waits 870s so the UI is
+# always the side that gives up first.
+RUN /opt/hermes/.venv/bin/python scripts/patch_acp_approval_timeout.py
 # NOTE: the old `patch_acp_autosave.py` (a 10s `save_session` daemon) is DELETED, not applied.
 # It resurrected deleted sessions: `save_session -> _persist` first "ensures the session record
 # exists" (acp_adapter/session.py) and so RE-INSERTS a row that was deleted out-of-band (UI or
