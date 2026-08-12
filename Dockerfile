@@ -188,6 +188,15 @@ ENV ARK_MODELS=doubao-seed-evolving,deepseek-v4-pro-260425
 # skill as "local/enabled" (verified). This keeps robot_sft OFF the PVC so it tracks
 # the image and updates on every rollout — instead of a real copy on the PVC that the
 # entrypoint would shadow forever (the entrypoint force-relinks on each boot too).
+# Node comes from the CN mirror the build pool already uses for apt and PyPI. install.sh
+# hardcodes https://nodejs.org/dist/ with no env override, and that download is the slow half
+# of this step from CN — but its `browser` path runs `check_node` first and only fetches node
+# when it is missing, so putting node here makes it skip straight to the browser. NPM_CONFIG_REGISTRY
+# covers the npm side of that remaining half.
+ARG NODE_VERSION=v22.16.0
+ARG NODE_MIRROR=https://mirrors.volces.com/nodejs-release
+ARG NPM_MIRROR=https://registry.npmmirror.com
+
 # Then snapshot the seeded home (config + the symlink) to /opt/hermes-seed for the
 # fresh-PVC path. NO GitHub at build OR runtime.
 # (No `|| true`: if the skill can't be linked, fail the build loudly.)
@@ -197,7 +206,14 @@ RUN mkdir -p "${HERMES_HOME}/skills" \
     && hermes config set model.base_url https://ark.cn-beijing.volces.com/api/v3 \
     && hermes config set model.default "$(printf '%s' "$ARK_MODELS" | cut -d, -f1)" \
     && hermes skills list | grep -qi robot_sft \
-    && bash "$(/opt/hermes/.venv/bin/python -c 'import hermes_cli,pathlib;print(pathlib.Path(hermes_cli.__file__).parent/"scripts"/"install.sh")')" \
+    && NODE_TARBALL="node-${NODE_VERSION}-linux-x64.tar.xz" \
+    && wget -q "${NODE_MIRROR}/${NODE_VERSION}/${NODE_TARBALL}" -O /tmp/node.tar.xz \
+    && mkdir -p "${HERMES_HOME}/node" \
+    && tar -xJf /tmp/node.tar.xz -C "${HERMES_HOME}/node" --strip-components=1 \
+    && rm -f /tmp/node.tar.xz \
+    && "${HERMES_HOME}/node/bin/node" --version \
+    && PATH="${HERMES_HOME}/node/bin:${PATH}" NPM_CONFIG_REGISTRY="${NPM_MIRROR}" \
+       bash "$(/opt/hermes/.venv/bin/python -c 'import hermes_cli,pathlib;print(pathlib.Path(hermes_cli.__file__).parent/"scripts"/"install.sh")')" \
          --ensure browser \
     && test -x "${HERMES_HOME}/node/bin/node" \
     && test -e "${HERMES_HOME}/node/bin/agent-browser" \

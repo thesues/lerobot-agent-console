@@ -57,3 +57,19 @@ env:
   - { name: HOME, value: /opt/data }                  # image default is 700, owned by another user
   - { name: HERMES_CHAT_SKILL, value: robot_sft }
   - { name: HERMES_HOME, value: /opt/data }
+
+# Public entry point. ONLY the Ingress (routing) is templated — the APIGInstance CRD that
+# provisions the gateway and owns its *.volceapi.com domain stays in k8s/, because a stray
+# `helm uninstall` would delete the gateway and take the domain with it.
+apig:
+  enabled: true
+  ingressName: console-dev-apig
+  # Each console sits behind its OWN APIG instance, so the class is per-environment.
+  ingressClassName: apig
+  # A distinct host per environment is what earns each its own managed domain.
+  # ⚠️ Never put the auto-assigned *.volceapi.com name here — doing that once killed the
+  # 443 listener outright (503 -> 000).
+  host: console-dev.apig.test
+  annotations:
+    ingress.vke.volcengine.com/apig-instance-name: gd9khpnlb1nffgnhcadcg-apig-instance
+    ingress.vke.volcengine.com/loadbalancer-id: gd9khpnlb1nffgnhcadcg

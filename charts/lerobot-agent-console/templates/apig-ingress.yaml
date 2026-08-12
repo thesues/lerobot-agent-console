@@ -1,0 +1,36 @@
+{{- if .Values.apig.enabled }}
+{{/* Public entry point. This is ONLY the routing rule — the APIGInstance CRD that provisions
+     the gateway and owns its *.volceapi.com domain stays out of Helm on purpose (k8s/), because
+     a stray `helm uninstall` would take the gateway and the domain with it.
+
+     It belongs in the chart precisely because it names the backend Service: when the consoles
+     were renamed, this file had to be hand-edited to match, which is the drift a chart exists
+     to prevent. Templating the backend off the same helper as the Service makes that
+     impossible. */}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.apig.ingressName }}
+  labels:
+    app: {{ include "console.name" . }}-apig
+  {{- with .Values.apig.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{/* Each console sits behind its OWN APIG instance, so this is per-environment: `apig` for
+       dev, `apig-test` for test. Pointing both at one class would route them to one gateway. */}}
+  ingressClassName: {{ .Values.apig.ingressClassName }}
+  rules:
+    {{/* A distinct host per environment is what gets each its own managed volceapi.com
+         domain. ⚠️ Do NOT add the auto-assigned *.volceapi.com name as a host here — doing
+         that once broke the 443 listener outright (503 -> 000). */}}
+    - host: {{ .Values.apig.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "console.name" . }}   {{/* the headless Service, :8080 */}}
+                port: { number: 8080 }
+{{- end }}
