@@ -43,6 +43,27 @@ if [ -x /usr/sbin/sshd ]; then
   /usr/sbin/sshd 2>/dev/null && echo "==> sshd up (:22, key-only, cluster-internal)" || true
 fi
 
+# --- shared env file: make credentials reach EVERY shell on this node ---------------------
+# `multinode.py env set HF_TOKEN` writes this file (and ships it to the workers). Two hooks are
+# needed because they cover disjoint shell types, and the gap between them is exactly where
+# "I already exported it" keeps dying:
+#   * /etc/profile.d  -> LOGIN shells      (ssh sessions, `bash -lc`, the training launcher)
+#   * $BASH_ENV       -> NON-INTERACTIVE   (`bash -c`, i.e. every command the agent runs, and
+#                                           any python subprocess) — these read no rc file at
+#                                           all, so without BASH_ENV a plain command cannot see
+#                                           the token no matter what was written where.
+# BASH_ENV is exported here so it is inherited by hermes and everything hermes spawns.
+# The file lives on the PVC, so credentials survive a pod restart. Exports only — this is
+# sourced by every bash on the node, so anything that can fail here breaks every command.
+CONSOLE_ENV="$HERMES_HOME/.console-env.sh"
+if [ ! -e "$CONSOLE_ENV" ]; then
+  printf '# Managed by `multinode.py env`. Exports only.\n' > "$CONSOLE_ENV"
+  chmod 600 "$CONSOLE_ENV"
+fi
+printf '[ -r %s ] && . %s\n' "$CONSOLE_ENV" "$CONSOLE_ENV" > /etc/profile.d/10-console-env.sh
+export BASH_ENV="$CONSOLE_ENV"
+echo "==> shared env: $CONSOLE_ENV (login shells via profile.d, bash -c via BASH_ENV)"
+
 # Fresh PVC (no config yet) → seed config + skill from the baked image snapshot.
 #
 # Why a snapshot exists at all, when the build installs into HERMES_HOME directly: by the time

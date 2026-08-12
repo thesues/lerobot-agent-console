@@ -71,16 +71,48 @@ distilled list of the failure modes above, each with the concrete check that pre
   involves a gated backbone or a private repo, ask the user for their HuggingFace token (`hf_…`,
   from https://huggingface.co/settings/tokens). Surface this **up front**, not after a 6-hour run
   fails on `401/403`. Never hardcode the token — it comes from the user.
-- **Creds the user gives in chat MUST be persisted to `~/.bashrc` — not just `export`ed.** TOS
-  keys (`TOS_ACCESS_KEY`/`TOS_SECRET_KEY`) and `HF_TOKEN` are needed by the **background**
-  training process (the watchdog launches `lerobot-train`, which sources `~/.bashrc`). A plain
-  `export FOO=…` only lives in the agent's current shell and **dies before training runs** — the
-  background process would fail with "credentials not found". So when the user provides a key,
-  **append it to `~/.bashrc`** (append/replace the `export` line; `~` is `/opt/data` in the pod)
-  AND `export` it for the current shell. Then every process — server, hermes, watchdog,
-  `lerobot-train` — inherits it. (In the pod, `TOS_*`/`HF_ENDPOINT` may already be in `~/.bashrc`.)
+- **Creds the user gives in chat go through `multinode.py env set` — never `export`, never an rc
+  file you edit by hand.** One command puts the value on every node and in front of every shell:
 
-## Core model: Session → Stages → Runs
+  ```bash
+  # value on STDIN with a QUOTED heredoc — it is taken literally, so $ ' " | ; in a token are safe
+  python /opt/data/skills/robot_sft/scripts/multinode.py env set HF_TOKEN --worker <worker-addr> <<'EOF'
+  hf_xxxxxxxxxxxxxxxxxxxx
+  EOF
+  python .../multinode.py env show HF_TOKEN HF_ENDPOINT --worker <worker-addr>   # verify, prints only LENGTHS
+  ```
+  Same for `TOS_ACCESS_KEY`/`TOS_SECRET_KEY`/`HF_ENDPOINT`. Drop `--worker` for a single-node run.
+
+  Why not the obvious alternatives — each is a failure we actually hit:
+  - `export FOO=…` alone dies with the agent's shell; the **background** watchdog/`lerobot-train`
+    never sees it.
+  - Editing `~/.bashrc` is worse than useless: `~` is `/opt/data` for the console but `/root` over
+    ssh, so the two disagree — and `.bashrc` is read only by INTERACTIVE shells anyway, while the
+    agent's own tool calls are plain `bash -c`, which reads **no** rc file. That is the "I set it,
+    but the next command cannot see it" loop.
+  - Putting the value in the command (`ssh w "export HF_TOKEN=$T"`) sends it through two shell
+    expansions into argv, history and every approval prompt — one awkward character and it is
+    `not a valid identifier` or a Python syntax error.
+
+  `env set` writes ONE file, `/opt/data/.console-env.sh` (0600, on the PVC → survives restarts),
+  hooked twice so no shell type is missed: `/etc/profile.d` for login shells (ssh, `bash -lc`, the
+  launcher) and `$BASH_ENV` for non-interactive ones (`bash -c`, python subprocesses). It ships the
+  file to each `--worker` over stdin, then re-checks each node through a login shell **by
+  comparing the length** — not by testing non-empty, because the failure below passes that test.
+
+  Before writing, it sweeps each node for competing `export NAME=` lines in `/root/.bashrc`,
+  `/opt/data/.bashrc` and the matching `.profile`s, and comments them out (reporting each file).
+  This is mandatory, not tidiness: a login shell runs `/etc/profile` → `profile.d` → `~/.profile`
+  → `~/.bashrc`, so a leftover rc export executes **after** the hook and silently **wins**. Measured
+  on the live pods: `env set` reported 26 chars on both nodes while the worker was still serving a
+  3-char token from two hand-edited rc files.
+  ⚠️ On a pod started before this was added, `$BASH_ENV` is unset — `env set` says so, and until the
+  next rollout one-off commands need `bash -lc`. `multinode.py` and `launch` already use login
+  shells, so training itself is unaffected either way.
+  ⚠️ `env show` prints **lengths, not values** — use it. A *wrong* token is far worse than a missing
+  one: `test -n "$HF_TOKEN"` passes and you 403 six hours in. (Seen for real: worker `HF_TOKEN=3
+  chars`, master `0` — leftover from hand-edited rc files.) Clear a bad one with `env unset`, and
+  note it does not touch values set outside the file — grep `/root/.bashrc` and `/opt/data/.bashrc`.
 
 - **Session** = one user intent ("fine-tune ACT on my SO-101 pick-place data"). One
   session directory under `<root>/sessions/<session_id>/`.

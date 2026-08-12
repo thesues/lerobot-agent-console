@@ -8,6 +8,7 @@ as an NCCL *timeout on the worker*), and orphaned `setsid` ranks still holding G
 on the next retry. This encodes each of those once, so the agent stops improvising.
 
 Subcommands
+  env     put a credential (HF_TOKEN…) on every node, visible to every shell
   check   all preflight gates for a cross-node run (read-only)
   status  one-line phase per node, from both logs (read-only)
   clean   kill leftover ranks on every node, verify GPU freed, optionally drop output_dir
@@ -28,6 +29,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import pathlib
+import re
 import os
 import shlex
 import subprocess
@@ -221,7 +225,9 @@ def cmd_check(a) -> int:
         if a.require_model:
             rc, out = run_remote(w, 'test -n "$HF_TOKEN" && echo yes || echo no')
             r.check(f"{w}: HF_TOKEN visible to a login shell", out.strip().endswith("yes"),
-                    "absent — gated repos 403. Note: non-login ssh does NOT read ~/.bashrc")
+                    "absent — gated repos 403. Fix on ALL nodes at once (value stays off argv):\n"
+                    "        python multinode.py env set HF_TOKEN --worker <addr> <<'EOF'\n"
+                    "        <token>\n        EOF")
 
         # 6. GPU count feeds --num_processes
         rc, out = run_remote(w, "nvidia-smi --query-gpu=name --format=csv,noheader | wc -l")
@@ -420,6 +426,162 @@ def cmd_launch(a) -> int:
 
 
 # --------------------------------------------------------------------------- cli
+# ------------------------------------------------------------------------------- env sharing
+# Credentials (HF_TOKEN above all) have to be visible to EVERY shell on EVERY node, and getting
+# there by hand is where multi-node setup keeps dying. Two independent failures, both real:
+#
+#   1. Getting the value in. Inlining it — `ssh w "export HF_TOKEN=$T"`, or appending to a
+#      remote rc file with the value in the command — puts it through two shell expansions and
+#      into argv, history and every approval prompt. One awkward character and it becomes
+#      `not a valid identifier` or a Python parse error. Here the value NEVER touches a command
+#      line: it arrives on stdin and ships to the workers on stdin (write_remote_file).
+#   2. Making later commands see it. `~/.bashrc` is read by INTERACTIVE shells and
+#      `/etc/profile.d` by LOGIN shells — but the agent's own tool calls are plain
+#      `bash -c`, which reads NEITHER. That is why "I exported it" is followed by a command
+#      that cannot see it. The only hook a non-interactive bash honours is $BASH_ENV.
+#
+# So: one file, two hooks — profile.d for login shells (what run_remote uses), $BASH_ENV for
+# non-interactive ones. ENV_FILE sits on the PVC, so it also survives a pod restart.
+ENV_FILE = "/opt/data/.console-env.sh"
+PROFILE_HOOK = "/etc/profile.d/10-console-env.sh"
+# `. file` only — no logic. This is sourced by every single bash on the node, so anything that
+# can fail here breaks every command on the box.
+HOOK_BODY = f'[ -r {ENV_FILE} ] && . {ENV_FILE}\n'
+
+
+def _parse_env_file(text: str) -> dict:
+    out = {}
+    for line in text.splitlines():
+        m = re.match(r"^export ([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line.strip())
+        if m:
+            try:
+                out[m.group(1)] = " ".join(shlex.split(m.group(2)))
+            except ValueError:
+                pass
+    return out
+
+
+def _render_env_file(env: dict) -> str:
+    head = ("# Managed by `multinode.py env`. Sourced by EVERY shell on this node (profile.d for\n"
+            "# login shells, $BASH_ENV for non-interactive ones). Exports only — no logic.\n")
+    return head + "".join(f"export {k}={shlex.quote(v)}\n" for k, v in sorted(env.items()))
+
+
+def _mask(v: str) -> str:
+    return f"{v[:4]}…{v[-4:]} ({len(v)} chars)" if len(v) > 12 else f"({len(v)} chars)"
+
+
+# Login-shell order is /etc/profile -> profile.d -> ~/.profile -> ~/.bashrc, so ANY leftover
+# `export HF_TOKEN=…` in an rc file runs AFTER our hook and silently WINS. That is not
+# hypothetical: a worker was found serving a 3-character HF_TOKEN from two hand-edited rc files
+# while the master had none — every `test -n "$HF_TOKEN"` check passed and the run 403s hours in.
+# So each node is swept before the file is installed. Commented out, not deleted: the line stays
+# visible for anyone wondering where their token went, and it is trivially reversible.
+RC_FILES = ["/root/.bashrc", "/root/.profile", "/opt/data/.bashrc", "/opt/data/.profile"]
+
+
+def _shadow_sweep(addr, name: str) -> str:
+    """Comment out competing `export NAME=` lines in rc files on one node. Returns a report."""
+    cmd = (
+        f'for f in {" ".join(RC_FILES)}; do [ -f "$f" ] || continue; '
+        f'n=$(grep -cE "^[[:space:]]*export {name}=" "$f" 2>/dev/null || true); '
+        f'[ "${{n:-0}}" -gt 0 ] || continue; '
+        f'sed -i -E "s|^([[:space:]]*export {name}=)|# [multinode env] shadowed, disabled: \\1|" "$f"; '
+        f'echo "$f($n)"; done')
+    rc, out = (run_local(cmd) if addr is None else run_remote(addr, cmd))
+    return " ".join(out.split()) if rc == 0 else f"sweep failed: {out}"
+
+
+def _install(addr, env_text):
+    """Write the env file + the login-shell hook on one node. addr=None means locally."""
+    if addr is None:
+        pathlib.Path(ENV_FILE).write_text(env_text)
+        os.chmod(ENV_FILE, 0o600)
+        pathlib.Path(PROFILE_HOOK).write_text(HOOK_BODY)
+        return 0, ""
+    rc, out = write_remote_file(addr, ENV_FILE, env_text)
+    if rc:
+        return rc, out
+    rc, out = write_remote_file(addr, PROFILE_HOOK, HOOK_BODY)
+    if rc:
+        return rc, out
+    return run_remote(addr, f"chmod 600 {ENV_FILE}")
+
+
+def cmd_env(a) -> int:
+    nodes = [None] + list(a.worker)          # None == this node
+
+    if a.action == "show":
+        for n in nodes:
+            label = "master" if n is None else n
+            # -l: a login shell, i.e. the same way run_remote and the launcher see it.
+            rc, out = (run_local if n is None else (lambda c, w=n: run_remote(w, c)))(
+                f'for v in {" ".join(a.name or ["HF_TOKEN"])}; do '
+                f'eval "x=\\${{$v:-}}"; printf "%s=%s(chars) " "$v" "${{#x}}"; done; echo')
+            print(f"  {label}: {out if rc == 0 else 'UNREACHABLE ' + out}")
+        return 0
+
+    if a.action == "unset":
+        local = pathlib.Path(ENV_FILE)
+        env = _parse_env_file(local.read_text()) if local.exists() else {}
+        if a.name[0] not in env:
+            print(f"  {a.name[0]} not in {ENV_FILE} — nothing to remove locally")
+        env.pop(a.name[0], None)
+        text = _render_env_file(env)
+        for n in nodes:
+            rc, out = _install(n, text)
+            print(f"  {'master' if n is None else n}: {'ok' if rc == 0 else 'FAILED ' + out}")
+        print(f"\nremoved {a.name[0]}. A value set OUTSIDE this file (~/.bashrc, /root/.bashrc,\n"
+              "the container env) is NOT touched — check with `env show` and clear it by hand.")
+        return 0
+
+    # ---- set: value arrives on STDIN, never in argv
+    if sys.stdin.isatty():
+        print("value must arrive on stdin, e.g.:\n"
+              f"  python multinode.py env set {a.name[0]} --worker <addr> <<'EOF'\n"
+              "  <value>\n  EOF", file=sys.stderr)
+        return 2
+    value = sys.stdin.read().strip("\n").strip()
+    if not value:
+        print("empty value on stdin — refusing", file=sys.stderr)
+        return 2
+
+    local = pathlib.Path(ENV_FILE)
+    env = _parse_env_file(local.read_text()) if local.exists() else {}
+    env[a.name[0]] = value
+    text = _render_env_file(env)
+
+    failed = 0
+    for n in nodes:
+        label = "master" if n is None else n
+        shadowed = _shadow_sweep(n, a.name[0])
+        rc, out = _install(n, text)
+        print(f"  {label}: {'ok' if rc == 0 else 'FAILED ' + out}"
+              + (f"  [disabled shadowing exports in {shadowed}]" if shadowed else ""))
+        failed += rc != 0
+
+    print(f"\n{a.name[0]} = {_mask(value)}  ->  {ENV_FILE} on {len(nodes)} node(s)")
+    # Verify the way it will actually be consumed, and compare the LENGTH. A non-empty test is
+    # useless here: it passes for a stale value that overrode ours, which is the exact failure
+    # this command exists to end.
+    want = len(value)
+    for n in nodes:
+        label = "master" if n is None else n
+        rc, out = (run_local if n is None else (lambda c, w=n: run_remote(w, c)))(
+            f'echo ${{#{a.name[0]}}}')
+        got = out.strip().splitlines()[-1] if out.strip() else "?"
+        ok = got == str(want)
+        failed += not ok
+        print(f"  login shell on {label}: {got} chars"
+              + ("" if ok else f"  <-- MISMATCH, expected {want}: something else still sets "
+                               f"{a.name[0]} on this node (grep the rc files)"))
+    if not os.environ.get("BASH_ENV"):
+        print("\nNOTE: BASH_ENV is unset in this container, so plain `bash -c` still cannot see it.\n"
+              f"      Until the next image rollout, prefix one-off commands with `bash -lc`.\n"
+              f"      (multinode.py / launch already use login shells, so training is unaffected.)")
+    return 1 if failed else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -458,6 +620,12 @@ def main() -> int:
     rd.add_argument("--export", action="store_true",
                     help="emit only `NCCL_IB_HCA=<hca>` for the MASTER, for `eval $(...)`")
 
+    ev = sub.add_parser("env", help="share credentials (HF_TOKEN…) across every node + shell")
+    ev.add_argument("action", choices=["set", "show", "unset"])
+    ev.add_argument("name", nargs="*", help="variable name(s); `set` takes exactly one")
+    ev.add_argument("--worker", action="append", default=[],
+                    help="worker address (repeatable); the master is always included")
+
     la = sub.add_parser("launch", help="start workers over ssh; master runs under the watchdog")
     common(la)
     la.add_argument("--command", required=True,
@@ -465,7 +633,9 @@ def main() -> int:
     la.add_argument("--worker-log", default="/opt/data/robot_sft/worker.log")
 
     a = ap.parse_args()
-    return {"check": cmd_check, "status": cmd_status, "rdma": cmd_rdma,
+    if a.cmd == "env" and a.action in ("set", "unset") and len(a.name) != 1:
+        ap.error(f"`env {a.action}` takes exactly one variable name")
+    return {"check": cmd_check, "status": cmd_status, "rdma": cmd_rdma, "env": cmd_env,
             "clean": cmd_clean, "launch": cmd_launch}[a.cmd](a)
 
 
