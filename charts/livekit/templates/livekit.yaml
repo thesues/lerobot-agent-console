@@ -61,6 +61,12 @@ metadata:
   name: {{ $name }}-clb
   labels: { app: {{ $name }} }
   annotations:
+    {{/* The CLB is a billed, slowly-provisioned resource holding a PUBLIC IP that every client
+         has baked into its --livekit-url. It outlives any single release, so Helm must not
+         delete it on uninstall — without this, removing a console would take the SFU's address
+         with it and silently break every robot pointing at it. Delete it deliberately:
+           kubectl delete svc <name>-clb */}}
+    helm.sh/resource-policy: keep
     service.beta.kubernetes.io/volcengine-loadbalancer-subnet-id: {{ .Values.service.subnetId | quote }}
     service.beta.kubernetes.io/volcengine-loadbalancer-address-type: {{ .Values.service.addressType | quote }}
 spec:

@@ -1,82 +1,103 @@
 # Helm charts
 
-Replaces the hand-maintained manifests in `k8s/` (which is gitignored, so those files only ever
-existed on one laptop — a chart in git is the point of this move). Two charts:
+Replaces the hand-maintained manifests in `k8s/`. Those were gitignored, so they only ever
+existed on one laptop, and the two console StatefulSets were kept in sync by editing both —
+they turned out to be identical apart from the name, which is what one chart plus two values
+files is for.
 
-| chart | what it deploys |
-|---|---|
-| `lerobot-agent-console` | the console StatefulSet + its headless Service. Dev and test are the **same chart**, differing only by `nameOverride`. |
-| `livekit` | the LiveKit SFU: Deployment + ConfigMap + its own public CLB. |
+| chart | deploys | notes |
+|---|---|---|
+| `lerobot-agent-console` | console StatefulSet + headless Service | dev and test are the **same chart**, differing only by `nameOverride` |
+| `livekit` | LiveKit SFU: Deployment + ConfigMap + its own public CLB | **shared by both consoles** — see below |
 
 ## Install / upgrade
 
 ```bash
+export KUBECONFIG=~/Downloads/kube.conf
+
 # dev
-helm upgrade --install lerobot-console      charts/lerobot-agent-console
+helm upgrade --install lerobot-agent-console charts/lerobot-agent-console
+
 # test — same chart, one value different
-helm upgrade --install lerobot-console-test charts/lerobot-agent-console -f charts/lerobot-agent-console/values-test.yaml
+helm upgrade --install lerobot-agent-console-test charts/lerobot-agent-console \
+  -f charts/lerobot-agent-console/values-test.yaml
 
-# livekit: nodeIp is REQUIRED (the CLB's public IP; the chart refuses to render without it)
-helm upgrade --install livekit charts/livekit --set nodeIp=$(kubectl get svc livekit-clb -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+# livekit — nodeIp is REQUIRED (the chart refuses to render without it: a wrong value makes
+# ICE hand clients an unroutable address and media never connects)
+helm upgrade --install livekit charts/livekit \
+  --set nodeIp=$(kubectl get svc livekit-clb -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 ```
 
-Bump the image without touching the chart:
+Ship a new image without touching the chart:
 
 ```bash
-helm upgrade lerobot-console charts/lerobot-agent-console --set image.tag=<commit-sha> --reuse-values
+helm upgrade lerobot-agent-console charts/lerobot-agent-console \
+  --set image.tag=$(git rev-parse HEAD) --reuse-values
 ```
 
-## Adopting the consoles that are already running
+**Resource names come from `nameOverride`, not the release name.** That value decides the PVC
+name (`hermes-home-<name>-0`) and the pod DNS the multi-node training dials, so it is pinned in
+values rather than inherited — installing under a different release name still produces the
+right objects.
 
-They were created with `kubectl apply`, so Helm does not own them yet — and because
-`persistence.size` is now `1Ti` while their (immutable) templates still say `128Gi`, a plain
-upgrade is **rejected**:
-
-    The StatefulSet "lerobot-console" is invalid: spec: Forbidden: updates to statefulset spec
-    for fields other than 'replicas', 'ordinals', 'template', ... are forbidden
-
-So adoption needs the StatefulSet object recreated. `--cascade=orphan` deletes only that object
-and **leaves the pods running and the PVCs intact**; the new StatefulSet then adopts the same
-pods by selector, and reuses the existing `hermes-home-*` PVCs because they already exist:
+## Inspecting what is actually deployed
 
 ```bash
-kubectl delete sts lerobot-console --cascade=orphan     # pods keep running
-helm upgrade --install lerobot-console charts/lerobot-agent-console
-kubectl rollout status sts/lerobot-console
+helm list                                    # releases, revision, status
+helm get manifest lerobot-agent-console      # the YAML really submitted — the useful one
+helm get values  lerobot-agent-console       # values in effect
+helm history     lerobot-agent-console       # revisions; input to `helm rollback <name> <rev>`
+
+# has anyone edited around Helm?
+helm get manifest lerobot-agent-console | kubectl diff -f -
 ```
 
-⚠️ Between those two commands nothing is managing the pods — if one dies in that window it is
-not recreated. Keep it to seconds, and do the two consoles one at a time.
+Helm keeps no local state: each release is a Secret in the namespace
+(`kubectl get secret -l owner=helm`), so any machine with the same kubeconfig sees the same
+releases. `STATUS: deployed` means the Helm operation succeeded — it says nothing about whether
+the pods are healthy.
 
-For the Service (no immutable problem) plain adoption is enough:
+## Why LiveKit is a separate chart
 
-```bash
-kubectl annotate svc lerobot-console meta.helm.sh/release-name=lerobot-console --overwrite
-kubectl annotate svc lerobot-console meta.helm.sh/release-namespace=default    --overwrite
-kubectl label    svc lerobot-console app.kubernetes.io/managed-by=Helm         --overwrite
-```
+The console does depend on it — the in-pod controller dials the SFU for teleoperation — so a
+subchart is tempting. Two things argue against:
 
-**Check with the right command.** `kubectl diff` writes an immutable-field rejection to
-**stderr** and exits 2 — a pipeline that discards stderr reports "no differences" for a change
-that cannot be applied at all. Use an apply dry-run, which says so on stdout:
+- **`nodeIp` is chicken-and-egg.** LiveKit starts with `--node-ip = the CLB's public IP`, and
+  that IP does not exist until the Service has been provisioned. Bundled, one `helm install`
+  cannot finish the job.
+- **The CLB outlives any console.** It is billed, slow to provision, and its IP is baked into
+  every client's `--livekit-url`. Bundling means `helm uninstall` of a console takes the SFU's
+  address with it.
 
-```bash
-helm template lerobot-console charts/lerobot-agent-console | kubectl apply --dry-run=server -f -
-```
+**One SFU serves both consoles.** LiveKit isolates by room and the teleop commands already pass
+one (`--session so100`) — point dev at `so100` and test at `so100-test`. A second SFU only earns
+its CLB when you need to change LiveKit itself without disturbing what dev is running.
+`livekit-isaac` is already that shape: a second SFU paired with no console at all (it serves
+isaaclab), which is the other reason this chart has to stand alone.
+
+The CLB Service carries `helm.sh/resource-policy: keep`, so even `helm uninstall livekit` leaves
+it — and the public IP — in place. Remove it deliberately: `kubectl delete svc <name>-clb`.
 
 ## Two immutable fields that will bite
 
 **`volumeClaimTemplates` cannot change on an existing StatefulSet.** `persistence.size` is
-`1Ti`, which is what the bound PVCs actually are (spec and status both). The live StatefulSet
-templates still say `128Gi` because the disks were grown by editing the PVCs directly, and that
-does not update the template — the same drift that made `kubectl apply -f k8s/statefulset.yaml`
-fail. A fresh install gets 1Ti with no ceremony; the already-running consoles need the
-orphan-delete above. To grow a disk later, edit the PVC **and** this value, or the next
-recreate silently goes back to the smaller size.
+`1Ti`, matching the real disks. If a running StatefulSet's template says something else, the
+API server rejects the upgrade outright — recreate the object with
+`kubectl delete sts <name> --cascade=orphan` (pods keep running, PVCs survive) and install
+again. To grow a disk later, edit the PVC **and** this value, or the next recreate silently
+goes back down.
 
-**`spec.selector` cannot change either.** The live consoles use a bare `app: <name>`, so
+**`spec.selector` cannot change either.** The consoles use a bare `app: <name>`, so
 `console.selectorLabels` emits exactly that. Adding the conventional `app.kubernetes.io/*` or
-`helm.sh/chart` labels there would break every upgrade — put extra labels on metadata instead.
+`helm.sh/chart` labels there breaks every upgrade — extra labels belong on metadata.
+
+**Check with an apply dry-run, not `kubectl diff`.** `kubectl diff` writes an immutable-field
+rejection to *stderr* and exits 2, so a pipeline that discards stderr reports "no differences"
+for a change the cluster will not accept:
+
+```bash
+helm template lerobot-agent-console charts/lerobot-agent-console | kubectl apply --dry-run=server -f -
+```
 
 ## Secrets are not in the charts
 
@@ -87,32 +108,28 @@ kubectl create secret generic lerobot-console-auth --from-literal=user=<u> --fro
 kubectl create secret generic livekit-auth --from-literal=keys='<api_key>: <api_secret>'
 ```
 
-`livekit` has **no credential fallback on purpose** — that SFU sits on a public CLB, so a key
-committed to this repo would be readable by anyone who can read the repo. A missing Secret holds
-the pod in `CreateContainerConfigError`, which is the intended failure.
+`livekit` has **no credential fallback on purpose** — that SFU is on a public CLB, so a key
+committed here would be readable by anyone who can read the repo. A missing Secret holds the pod
+in `CreateContainerConfigError`, which is the intended failure.
 
 ## Publishing to the OCI registry
 
-The registry accepts charts alongside images:
-
 ```bash
-helm registry login iaas-us-cn-beijing.cr.volces.com -u <user>
-helm package charts/lerobot-agent-console --version <chart-version>
-helm push lerobot-agent-console-<chart-version>.tgz oci://iaas-us-cn-beijing.cr.volces.com/physicalai
+helm registry login iaas-us-cn-beijing.cr.volces.com -u <account>@<account-id>
+helm package charts/lerobot-agent-console
+helm push lerobot-agent-console-<version>.tgz oci://iaas-us-cn-beijing.cr.volces.com/physicalai
 ```
-
-Bump `version:` in `Chart.yaml` for any template change — pushing over an existing version is
-how you get two different charts answering to one number.
 
 The chart is named after the product, so it lands in the **same repo as the image**
 (`physicalai/lerobot-agent-console`). They coexist: image tags are 40-char commit SHAs, chart
-tags are semver, so they cannot collide. Note the chart name is NOT the resource name — the
-running objects are `lerobot-console` / `lerobot-console-test`, pinned by `nameOverride` so
-that installing under any release name still targets the right console.
+tags are semver. Bump `version:` in `Chart.yaml` for any template change — pushing over an
+existing version is how you get two different charts answering to one number.
+
+Credentials come from the macOS keychain (`credsStore`), so `auths` in the config JSON is empty
+even when you are logged in. A read probe returning **404 rather than 401** means auth worked.
 
 ## Not converted
 
-`k8s/apig-ingress*.yaml` and `k8s/apig-instance-test.yaml` stay as raw manifests. They create
-Volcengine `APIGInstance` CRDs that own **provisioned gateways with public domains**; a stray
-`helm uninstall` would delete the gateway and the domain with it. They change roughly never, so
-templating them buys nothing and risks a lot.
+`k8s/apig-ingress*.yaml` and `k8s/apig-instance-test.yaml` stay raw. They create Volcengine
+`APIGInstance` CRDs that own **provisioned gateways with public domains**; a stray
+`helm uninstall` would delete the gateway and the domain with it. They change roughly never.
