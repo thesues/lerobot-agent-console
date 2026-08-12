@@ -611,6 +611,28 @@ match · dataset at the same path · **model cache + `HF_TOKEN`** · GPU count �
 report each failure. The other subcommands: `status` (see the polling rule below), `clean` (before
 any retry), `launch` (start workers with correct redirects + recorded PIDs).
 
+**Resuming a MULTI-NODE run is not the same problem as resuming a single-node one.** lerobot
+writes the checkpoint from rank 0 only (`if is_main_process: save_checkpoint(...)`) but reads it
+from **every** rank on the way back in (`load_training_num_processes(cfg.checkpoint_path)`, and
+each rank builds the policy from `--config_path`). A worker whose `output_dir` was never written
+to therefore dies the instant it starts, while the master looks perfectly healthy — the failure
+surfaces on the node that did nothing wrong. Before any multi-node resume:
+
+```bash
+python .../multinode.py resume --worker <addr> --output-dir <the ORIGINAL run's output_dir>
+```
+It resolves `checkpoints/last` (a relative symlink), verifies the checkpoint is complete (a
+mid-write one fails later, on every rank), rsyncs **only that one step dir** to every worker
+(~9 GB for pi05 — the whole `checkpoints/` tree would be several times that), recreates `last`
+there, and prints the exact `--resume=true --config_path=…` to append. Then gate it with
+`multinode.py check --resume …`, which INVERTS the output_dir rule: on a resume the directory
+must exist, with a checkpoint, on every node.
+
+⚠️ If the run died **before** the first `save_freq` step there is no checkpoint at all — resume
+is impossible. Delete `output_dir` on every node (`clean --remove-output-dir`) and start over. A
+leftover `output_dir` with no checkpoint is precisely what raises
+`FileExistsError: Output directory … already exists and resume is False`.
+
 Why these specific gates — each one is a failure we hit and misdiagnosed:
 - **Every rank builds the policy itself**, so the pretrained backbone must be cached on EVERY node
   and gated repos need `HF_TOKEN` there. A worker without them 403s seconds after launch. ⚠️ A
