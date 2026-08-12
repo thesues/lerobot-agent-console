@@ -242,23 +242,16 @@ Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. Th
     can split a module mid-way (notably `SIZE_BASED_WRAP`) is the wrong tool — use
     `TRANSFORMER_BASED_WRAP`. Until someone reproduces it with a traceback: **run FSDP without
     `--float8`, or fp8 without FSDP.**
-  - **pi0/pi05 CANNOT be trained with FSDP on this lerobot — use DDP.** Not a tuning problem, and
-    not fixable from the config: after wrapping `_PiGemmaDecoderLayerBase` correctly it still dies
-    in `PiGemmaRMSNorm.forward` with `size of tensor a (2048) must match tensor b (0)`.
-    **Why:** `modeling_pi05.py:compute_layer_complete` never calls the decoder layer's `forward` —
-    it reaches into the submodules (`layer.input_layernorm`, `layer.self_attn.q_proj`, …) from a
-    module-level function, because the VLM and action-expert towers have to interleave through a
-    shared attention. FSDP unshards a wrapped module's parameters in its forward **pre-hook**, so
-    bypassing the forward means the hook never fires, the parameters stay sharded, and on a rank
-    that does not own the shard `self.weight` is a size-0 local tensor — that is the `(0)`. Same
-    cause behind FSDP2's `mixed Tensor and DTensor`.
-    **It is NOT** the adarms conditional branches, expert routing, or `find_unused_parameters`
-    (which lerobot sets for every policy, unrelated) — so "rewrite adarms into a static graph"
-    would not fix it. A real fix means making the manual orchestration FSDP-aware (wrap where a
-    `forward` is actually called, or `summon_full_params` around that section), which is a change
-    to pi05 itself.
-    **Scale pi05 with DDP + a bigger per-rank batch instead** — measured 2-node b8→b12: 10.5 →
-    13.3 samples/s (+27%) at 83.5 GB, no code change.
+  - **pi0/pi05 CANNOT be trained with FSDP — use DDP.** Every wrap policy fails the same way, so
+    don't spend a day re-deriving it. `compute_layer_complete` never calls the decoder layer's
+    `forward` — it reaches into `layer.input_layernorm` / `layer.self_attn.q_proj` directly,
+    because the VLM and action-expert towers interleave through one shared attention. FSDP
+    unshards parameters in that forward hook, so the parameters stay sharded and you get a size-0
+    tensor. (Not the adarms branches and not `find_unused_parameters` — fixing those changes
+    nothing.) It is also not worth fixing: pi05 is 3B and fits, and at b12 the 83.5 GB is mostly
+    ACTIVATIONS, which FSDP does not shard.
+    **Scale it with DDP + a bigger per-rank batch** — measured 2-node b8→b12: 10.5 → 13.3
+    samples/s (+27%), no code change.
   - **How to train with FSDP:** lerobot supports it through accelerate and the repo documents it —
     **`docs/source/multi_gpu_training.mdx` → "Training Large Models with FSDP"** is the reference
     (launch command, minimal `fsdp.yaml`, and the checkpoint/resume semantics). Do not re-derive it.
