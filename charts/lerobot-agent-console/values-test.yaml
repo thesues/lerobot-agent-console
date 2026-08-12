@@ -9,4 +9,6 @@ apig:
   ingressName: console-test-apig
   ingressClassName: apig-test
   host: console-test.apig.test
-  annotations: {}      # the test instance is selected by ingressClassName alone
+  # The test gateway is selected by ingressClassName alone. `annotations: {}` would NOT work
+  # here — Helm merges maps, so dev's instance id would leak through (it did, and broke it).
+  noAnnotations: true
