@@ -43,26 +43,49 @@ if [ -x /usr/sbin/sshd ]; then
   /usr/sbin/sshd 2>/dev/null && echo "==> sshd up (:22, key-only, cluster-internal)" || true
 fi
 
-# --- shared env file: make credentials reach EVERY shell on this node ---------------------
-# `multinode.py env set HF_TOKEN` writes this file (and ships it to the workers). Two hooks are
-# needed because they cover disjoint shell types, and the gap between them is exactly where
-# "I already exported it" keeps dying:
-#   * /etc/profile.d  -> LOGIN shells      (ssh sessions, `bash -lc`, the training launcher)
-#   * $BASH_ENV       -> NON-INTERACTIVE   (`bash -c`, i.e. every command the agent runs, and
-#                                           any python subprocess) — these read no rc file at
-#                                           all, so without BASH_ENV a plain command cannot see
-#                                           the token no matter what was written where.
-# BASH_ENV is exported here so it is inherited by hermes and everything hermes spawns.
-# The file lives on the PVC, so credentials survive a pod restart. Exports only — this is
-# sourced by every bash on the node, so anything that can fail here breaks every command.
+# --- one shell-init file, hooked from every entry point a bash can take -------------------
+# Four shell flavours, three DIFFERENT hooks, and missing any one of them produces a bug that
+# looks like something else entirely:
+#   login (`bash -l`, ssh login)        -> /etc/profile.d/*.sh
+#   non-interactive (`bash -c`)         -> $BASH_ENV        (reads NO rc file otherwise)
+#   ssh remote command (`ssh h 'cmd'`)  -> ~/.bashrc        (Debian bash sources it when stdin
+#                                                            is a socket; $BASH_ENV does NOT
+#                                                            survive the ssh boundary)
+#   interactive                         -> ~/.bashrc
+#
+# sshd builds its own environment from scratch: neither the image's ENV nor PID 1's exports
+# cross into an ssh session. Measured on the worker, `ssh host 'which accelerate'` came back
+# empty with PATH=/root/.local/bin:/usr/local/sbin:... — no venv — while the same command under
+# `bash -l -s` found it. That is why the venv is put on PATH here rather than only in
+# /etc/profile.d/10-lerobot-venv.sh, which login shells alone read.
+#
+# PATH is extended idempotently instead of sourcing the venv's `activate`: this file is sourced
+# by EVERY bash, including nested ones, and activate prepends unconditionally.
 CONSOLE_ENV="$HERMES_HOME/.console-env.sh"
+SHELL_INIT=/etc/console-shell-init.sh
 if [ ! -e "$CONSOLE_ENV" ]; then
   printf '# Managed by `multinode.py env`. Exports only.\n' > "$CONSOLE_ENV"
   chmod 600 "$CONSOLE_ENV"
 fi
-printf '[ -r %s ] && . %s\n' "$CONSOLE_ENV" "$CONSOLE_ENV" > /etc/profile.d/10-console-env.sh
-export BASH_ENV="$CONSOLE_ENV"
-echo "==> shared env: $CONSOLE_ENV (login shells via profile.d, bash -c via BASH_ENV)"
+cat > "$SHELL_INIT" <<INIT
+# Managed by docker-entrypoint.sh. Sourced by every shell on this node — keep it cheap and
+# incapable of failing, or every command on the box breaks.
+case ":\$PATH:" in
+  *":/lerobot/.venv/bin:"*) ;;
+  *) [ -d /lerobot/.venv/bin ] && PATH="/lerobot/.venv/bin:\$PATH" && export PATH ;;
+esac
+[ -r $CONSOLE_ENV ] && . $CONSOLE_ENV
+INIT
+printf '[ -r %s ] && . %s\n' "$SHELL_INIT" "$SHELL_INIT" > /etc/profile.d/10-console-env.sh
+export BASH_ENV="$SHELL_INIT"
+# ~/.bashrc is the ONLY one of the three an `ssh host 'cmd'` reads. Appended once, by marker:
+# this runs on every boot, and $HERMES_HOME/.bashrc lives on the PVC.
+for _rc in /root/.bashrc "$HERMES_HOME/.bashrc"; do
+  touch "$_rc" 2>/dev/null || continue
+  grep -q console-shell-init "$_rc" 2>/dev/null && continue
+  printf '\n[ -r %s ] && . %s\n' "$SHELL_INIT" "$SHELL_INIT" >> "$_rc"
+done
+echo "==> shell init: $SHELL_INIT (profile.d + BASH_ENV + ~/.bashrc; venv on PATH for ssh too)"
 
 # Fresh PVC (no config yet) → seed config + skill from the baked image snapshot.
 #

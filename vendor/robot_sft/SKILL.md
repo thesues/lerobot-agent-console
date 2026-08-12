@@ -95,8 +95,21 @@ distilled list of the failure modes above, each with the concrete check that pre
     `not a valid identifier` or a Python syntax error.
 
   `env set` writes ONE file, `/opt/data/.console-env.sh` (0600, on the PVC → survives restarts),
-  hooked twice so no shell type is missed: `/etc/profile.d` for login shells (ssh, `bash -lc`, the
-  launcher) and `$BASH_ENV` for non-interactive ones (`bash -c`, python subprocesses). It ships the
+  pulled in by `/etc/console-shell-init.sh`, which is hooked from all THREE places a bash can
+  read, because they cover disjoint shell types:
+  | shell | hook |
+  |---|---|
+  | login — `bash -l`, ssh login, the launcher | `/etc/profile.d/10-console-env.sh` |
+  | non-interactive — `bash -c`, python subprocesses | `$BASH_ENV` |
+  | **ssh remote command — `ssh host 'cmd'`** | **`~/.bashrc`** |
+
+  ⚠️ That third row is its own trap, and it bites PATH before it bites credentials: **sshd builds
+  its environment from scratch**, so neither the image's `ENV` nor anything exported by PID 1
+  crosses into an ssh session — `$BASH_ENV` included. Measured on the worker,
+  `ssh host 'which accelerate'` returned nothing with
+  `PATH=/root/.local/bin:/usr/local/sbin:…` (no venv), while the identical command under
+  `bash -l -s` found it. So `/etc/console-shell-init.sh` also puts `/lerobot/.venv/bin` on PATH
+  (idempotently — it is sourced by every bash, including nested ones). It ships the
   file to each `--worker` over stdin, then re-checks each node through a login shell **by
   comparing the length** — not by testing non-empty, because the failure below passes that test.
 
