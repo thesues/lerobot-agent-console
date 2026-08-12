@@ -28,33 +28,51 @@ helm upgrade lerobot-console charts/lerobot-console --set image.tag=<commit-sha>
 
 ## Adopting the consoles that are already running
 
-They were created with `kubectl apply`, so Helm does not own them yet. Adoption is safe **only
-because the rendered output currently matches the live objects field for field** — verified with
-`kubectl diff`, which came back empty for both. Re-check before adopting:
+They were created with `kubectl apply`, so Helm does not own them yet — and because
+`persistence.size` is now `1Ti` while their (immutable) templates still say `128Gi`, a plain
+upgrade is **rejected**:
+
+    The StatefulSet "lerobot-console" is invalid: spec: Forbidden: updates to statefulset spec
+    for fields other than 'replicas', 'ordinals', 'template', ... are forbidden
+
+So adoption needs the StatefulSet object recreated. `--cascade=orphan` deletes only that object
+and **leaves the pods running and the PVCs intact**; the new StatefulSet then adopts the same
+pods by selector, and reuses the existing `hermes-home-*` PVCs because they already exist:
 
 ```bash
-helm template lerobot-console charts/lerobot-console | kubectl diff -f -   # expect: no output
+kubectl delete sts lerobot-console --cascade=orphan     # pods keep running
+helm upgrade --install lerobot-console charts/lerobot-console
+kubectl rollout status sts/lerobot-console
 ```
 
-Then hand ownership to Helm without recreating anything:
+⚠️ Between those two commands nothing is managing the pods — if one dies in that window it is
+not recreated. Keep it to seconds, and do the two consoles one at a time.
+
+For the Service (no immutable problem) plain adoption is enough:
 
 ```bash
-for k in Service StatefulSet; do
-  kubectl annotate $k lerobot-console meta.helm.sh/release-name=lerobot-console --overwrite
-  kubectl annotate $k lerobot-console meta.helm.sh/release-namespace=default   --overwrite
-  kubectl label    $k lerobot-console app.kubernetes.io/managed-by=Helm        --overwrite
-done
-helm upgrade --install lerobot-console charts/lerobot-console
+kubectl annotate svc lerobot-console meta.helm.sh/release-name=lerobot-console --overwrite
+kubectl annotate svc lerobot-console meta.helm.sh/release-namespace=default    --overwrite
+kubectl label    svc lerobot-console app.kubernetes.io/managed-by=Helm         --overwrite
+```
+
+**Check with the right command.** `kubectl diff` writes an immutable-field rejection to
+**stderr** and exits 2 — a pipeline that discards stderr reports "no differences" for a change
+that cannot be applied at all. Use an apply dry-run, which says so on stdout:
+
+```bash
+helm template lerobot-console charts/lerobot-console | kubectl apply --dry-run=server -f -
 ```
 
 ## Two immutable fields that will bite
 
 **`volumeClaimTemplates` cannot change on an existing StatefulSet.** `persistence.size` is
-`128Gi` because that is what the live templates say — even though the bound PVCs are actually
-**1Ti**, because they were resized by editing the PVCs directly, which does not update the
-template. Setting `1Ti` here would make `helm upgrade` fail on the running consoles (this is the
-same reason `kubectl apply -f k8s/statefulset.yaml` had been failing). Raise it only for a fresh
-install; to grow an existing disk, edit the PVC, not the chart.
+`1Ti`, which is what the bound PVCs actually are (spec and status both). The live StatefulSet
+templates still say `128Gi` because the disks were grown by editing the PVCs directly, and that
+does not update the template — the same drift that made `kubectl apply -f k8s/statefulset.yaml`
+fail. A fresh install gets 1Ti with no ceremony; the already-running consoles need the
+orphan-delete above. To grow a disk later, edit the PVC **and** this value, or the next
+recreate silently goes back to the smaller size.
 
 **`spec.selector` cannot change either.** The live consoles use a bare `app: <name>`, so
 `console.selectorLabels` emits exactly that. Adding the conventional `app.kubernetes.io/*` or

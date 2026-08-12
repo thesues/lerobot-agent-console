@@ -24,11 +24,14 @@ capabilities: ["IPC_LOCK"]
 
 persistence:
   storageClass: ebs-essd
-  # ⚠️ MUST match the live StatefulSet: volumeClaimTemplates is IMMUTABLE, so `helm upgrade`
-  # on the existing consoles fails if this differs. The live templates say 128Gi even though
-  # the bound PVCs were resized to 1Ti by editing the PVCs directly (which does not, and
-  # cannot, update the template). Raise this only for a fresh install — see charts/README.md.
-  size: 128Gi
+  # The REAL size: both bound PVCs are 1Ti (spec and status), resized by editing the PVCs
+  # directly. The live StatefulSet templates still say 128Gi, because editing a PVC does not —
+  # and cannot — update the template it came from.
+  # ⚠️ volumeClaimTemplates is IMMUTABLE, so a plain `helm upgrade` against those StatefulSets
+  # is REJECTED while this differs from 128Gi. Adopting them needs a one-time
+  # `kubectl delete sts --cascade=orphan` (keeps pods and PVCs) before the first install —
+  # see charts/README.md. A fresh install gets 1Ti directly and needs none of that.
+  size: 1Ti
 
 # /dev/shm for the PyTorch DataLoader. The 64Mi container default overflows ("Bus error" /
 # "out of shared memory") and the container cannot remount it without CAP_SYS_ADMIN.
