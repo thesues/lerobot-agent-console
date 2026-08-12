@@ -225,8 +225,7 @@ RUN mkdir -p "${HERMES_HOME}/skills" \
     && test -x "${HERMES_HOME}/node/bin/node" \
     && test -e "${HERMES_HOME}/node/bin/agent-browser" \
     && test -d "${HERMES_HOME}/.agent-browser/browsers" \
-    && cp -a "${HERMES_HOME}" /opt/hermes-seed \
-    && rm -rf "${HERMES_HOME}/node" "${HERMES_HOME}/.agent-browser"
+    && cp -al "${HERMES_HOME}" /opt/hermes-seed
 
 # Node + agent-browser (~384 MB) are installed ABOVE, before the snapshot, so they land in
 # /opt/hermes-seed and reach a fresh PVC by local copy. Without this the first message to the
@@ -243,13 +242,14 @@ RUN mkdir -p "${HERMES_HOME}/skills" \
 # (mirror down, npm hiccup) the BUILD fails here, instead of every fresh pod paying for a
 # download that may not even succeed.
 #
-# The originals are deleted from $HERMES_HOME right after the snapshot: at runtime the PVC
-# mounts OVER /opt/data, so that copy is unreachable — ~764 MB (node 374 + Chromium 390) of
-# image weight that nothing can ever read, paid on every pull. /opt/hermes-seed is the copy
-# that matters, and the entrypoint restores from it.
-# Consequence to know: `docker run` WITHOUT a PVC now starts with an empty /opt/data, and the
-# entrypoint seeds it from $SEED on first boot exactly as it does in the cluster — so the only
-# thing lost is the ability to inspect those files at the pre-entrypoint image layer.
+# The snapshot uses `cp -al` — HARDLINKS, not copies. Both paths hold the same ~764 MB (node
+# 374 + Chromium 390), and at runtime the PVC mounts over /opt/data so that side is unreachable
+# anyway; without -l the image would carry the bytes twice and every pull would pay for a copy
+# nothing can read. Hardlinked files are stored once in the layer.
+# Safe because nothing writes to either path afterwards: the build is done, and the entrypoint
+# copies OUT of $SEED onto the PVC (a different filesystem), which creates fresh files rather
+# than following the link. Deleting the originals instead would also save the space, but would
+# leave `docker run` without a PVC staring at an empty /opt/data before the entrypoint runs.
 
 # $HERMES_HOME/node/bin is added to PATH below. hermes finds agent-browser by absolute path
 # (dep_ensure._has_hermes_agent_browser), but its `node` check is plain shutil.which("node") —
