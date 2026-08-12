@@ -13,13 +13,13 @@ metadata:
   name: {{ .Values.apig.ingressName }}
   labels:
     app: {{ include "console.name" . }}-apig
-  {{- if and .Values.apig.annotations (not .Values.apig.noAnnotations) }}
+  {{- with .Values.apig.annotations }}
   {{/* ⚠️ Helm DEEP-MERGES maps across values files: setting `annotations: {}` in
        values-test.yaml does NOT clear the parent's entries, it keeps them. That silently gave
        the test Ingress dev's apig-instance-name and loadbalancer-id, pointing it at the wrong
        gateway — its public IP stopped answering entirely (000, not even a 5xx). An explicit
        boolean is the only reliable way to mean "none here". */}}
-  annotations: {{- toYaml .Values.apig.annotations | nindent 4 }}
+  annotations: {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
   {{/* Each console sits behind its OWN APIG instance, so this is per-environment: `apig` for

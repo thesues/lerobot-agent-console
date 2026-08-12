@@ -9,6 +9,12 @@ apig:
   ingressName: console-test-apig
   ingressClassName: apig-test
   host: console-test.apig.test
-  # The test gateway is selected by ingressClassName alone. `annotations: {}` would NOT work
-  # here — Helm merges maps, so dev's instance id would leak through (it did, and broke it).
-  noAnnotations: true
+  # Bind the gateway EXPLICITLY, like dev, instead of relying on ingressClassName alone —
+  # a class name is a weak claim, and another Ingress declaring the same class can take the
+  # instance. apig-instance-name is the APIGInstance CRD's metadata.name; loadbalancer-id is
+  # its status.id.
+  # ⚠️ Helm DEEP-MERGES these maps with values.yaml, so these two keys override dev's — but any
+  # NEW key added to values.yaml would silently appear here too. Keep both files in step.
+  annotations:
+    ingress.vke.volcengine.com/apig-instance-name: lerobot-console-test-apig-instance
+    ingress.vke.volcengine.com/loadbalancer-id: gd9ls2o5b1nffgnhd51r0
