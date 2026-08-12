@@ -197,7 +197,32 @@ RUN mkdir -p "${HERMES_HOME}/skills" \
     && hermes config set model.base_url https://ark.cn-beijing.volces.com/api/v3 \
     && hermes config set model.default "$(printf '%s' "$ARK_MODELS" | cut -d, -f1)" \
     && hermes skills list | grep -qi robot_sft \
+    && bash "$(/opt/hermes/.venv/bin/python -c 'import hermes_cli,pathlib;print(pathlib.Path(hermes_cli.__file__).parent/"scripts"/"install.sh")')" \
+         --ensure browser \
+    && test -x "${HERMES_HOME}/node/bin/node" \
+    && test -e "${HERMES_HOME}/node/bin/agent-browser" \
     && cp -a "${HERMES_HOME}" /opt/hermes-seed
+
+# Node + agent-browser (~384 MB) are installed ABOVE, before the snapshot, so they land in
+# /opt/hermes-seed and reach a fresh PVC by local copy. Without this the first message to the
+# agent downloads them at runtime — 2m34s measured on a fresh PVC from CN, with the UI stuck on
+# "正在启动 Agent" the whole time.
+#
+# HERMES_DISABLE_LAZY_INSTALLS=1 (set above) does NOT prevent that: it is only read by
+# tools/lazy_deps.py, which guards lazy installs of Python backend packages. The browser comes
+# from hermes_cli/dep_ensure.py, where that variable appears zero times — and the ACP process
+# runs with `--accept`, so it installs without even prompting. The image was simply incomplete
+# and hermes finished itself at runtime.
+#
+# The `test -x` lines are the point of doing this at build time: if the install silently fails
+# (mirror down, npm hiccup) the BUILD fails here, instead of every fresh pod paying for a
+# download that may not even succeed.
+#
+# $HERMES_HOME/node/bin is added to PATH below. hermes finds agent-browser by absolute path
+# (dep_ensure._has_hermes_agent_browser), but its `node` check is plain shutil.which("node") —
+# so without PATH, `hermes --tui` reports "Node.js is not installed" while node sits right
+# there, and offers to install it again.
+ENV PATH="/opt/data/node/bin:${PATH}"
 
 # --- assert the runtime wiring at BUILD time (fail fast if a venv is wrong) -- #
 # 1) server.py runs in the lerobot venv → must import aiohttp + yaml and parse.
