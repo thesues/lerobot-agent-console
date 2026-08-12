@@ -1,5 +1,5 @@
 apiVersion: v2
-name: lerobot-console
+name: lerobot-agent-console
 description: LeRobot Agent Console — a GPU StatefulSet with a per-pod PVC, fronted by APIG.
 type: application
 # version    = the chart's own version; bump on any template change.

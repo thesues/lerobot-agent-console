@@ -5,16 +5,16 @@ existed on one laptop — a chart in git is the point of this move). Two charts:
 
 | chart | what it deploys |
 |---|---|
-| `lerobot-console` | the console StatefulSet + its headless Service. Dev and test are the **same chart**, differing only by `nameOverride`. |
+| `lerobot-agent-console` | the console StatefulSet + its headless Service. Dev and test are the **same chart**, differing only by `nameOverride`. |
 | `livekit` | the LiveKit SFU: Deployment + ConfigMap + its own public CLB. |
 
 ## Install / upgrade
 
 ```bash
 # dev
-helm upgrade --install lerobot-console      charts/lerobot-console
+helm upgrade --install lerobot-console      charts/lerobot-agent-console
 # test — same chart, one value different
-helm upgrade --install lerobot-console-test charts/lerobot-console -f charts/lerobot-console/values-test.yaml
+helm upgrade --install lerobot-console-test charts/lerobot-agent-console -f charts/lerobot-agent-console/values-test.yaml
 
 # livekit: nodeIp is REQUIRED (the CLB's public IP; the chart refuses to render without it)
 helm upgrade --install livekit charts/livekit --set nodeIp=$(kubectl get svc livekit-clb -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
@@ -23,7 +23,7 @@ helm upgrade --install livekit charts/livekit --set nodeIp=$(kubectl get svc liv
 Bump the image without touching the chart:
 
 ```bash
-helm upgrade lerobot-console charts/lerobot-console --set image.tag=<commit-sha> --reuse-values
+helm upgrade lerobot-console charts/lerobot-agent-console --set image.tag=<commit-sha> --reuse-values
 ```
 
 ## Adopting the consoles that are already running
@@ -41,7 +41,7 @@ pods by selector, and reuses the existing `hermes-home-*` PVCs because they alre
 
 ```bash
 kubectl delete sts lerobot-console --cascade=orphan     # pods keep running
-helm upgrade --install lerobot-console charts/lerobot-console
+helm upgrade --install lerobot-console charts/lerobot-agent-console
 kubectl rollout status sts/lerobot-console
 ```
 
@@ -61,7 +61,7 @@ kubectl label    svc lerobot-console app.kubernetes.io/managed-by=Helm         -
 that cannot be applied at all. Use an apply dry-run, which says so on stdout:
 
 ```bash
-helm template lerobot-console charts/lerobot-console | kubectl apply --dry-run=server -f -
+helm template lerobot-console charts/lerobot-agent-console | kubectl apply --dry-run=server -f -
 ```
 
 ## Two immutable fields that will bite
@@ -97,12 +97,18 @@ The registry accepts charts alongside images:
 
 ```bash
 helm registry login iaas-us-cn-beijing.cr.volces.com -u <user>
-helm package charts/lerobot-console --version <chart-version>
-helm push lerobot-console-<chart-version>.tgz oci://iaas-us-cn-beijing.cr.volces.com/physicalai
+helm package charts/lerobot-agent-console --version <chart-version>
+helm push lerobot-agent-console-<chart-version>.tgz oci://iaas-us-cn-beijing.cr.volces.com/physicalai
 ```
 
 Bump `version:` in `Chart.yaml` for any template change — pushing over an existing version is
 how you get two different charts answering to one number.
+
+The chart is named after the product, so it lands in the **same repo as the image**
+(`physicalai/lerobot-agent-console`). They coexist: image tags are 40-char commit SHAs, chart
+tags are semver, so they cannot collide. Note the chart name is NOT the resource name — the
+running objects are `lerobot-console` / `lerobot-console-test`, pinned by `nameOverride` so
+that installing under any release name still targets the right console.
 
 ## Not converted
 
