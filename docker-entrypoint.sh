@@ -74,21 +74,6 @@ if [ ! -s "$HERMES_HOME/config.yaml" ] && [ -d "$SEED" ]; then
   cp -a "$SEED/." "$HERMES_HOME/"
 fi
 
-# Node + browser seed on their OWN condition — presence, not "is this a fresh PVC".
-# Gating them on config.yaml would skip every volume created before this image: those have a
-# config.yaml, so the block above never fires, yet they have no node — and hermes goes back to
-# downloading ~384 MB on the first message (2m34s from CN, the thing this exists to prevent).
-# Tested the way hermes tests them: node by its binary (shutil.which), the browser by its
-# browsers dir (dep_ensure._has_hermes_agent_browser).
-if [ -x "$SEED/node/bin/node" ] && [ ! -x "$HERMES_HOME/node/bin/node" ]; then
-  echo "==> seeding node from baked snapshot (offline)"
-  cp -a "$SEED/node" "$HERMES_HOME/"
-fi
-if [ -d "$SEED/.agent-browser/browsers" ] && [ ! -d "$HERMES_HOME/.agent-browser/browsers" ]; then
-  echo "==> seeding agent-browser + Chromium from baked snapshot (offline)"
-  cp -a "$SEED/.agent-browser" "$HERMES_HOME/"
-fi
-
 # Enforce console policy on EVERY boot. config.yaml lives on the PVC and SHADOWS the image seed,
 # so an image rollout alone never updates an existing PVC — we must re-assert this each start
 # (same reason the skill needs a symlink).
@@ -113,12 +98,19 @@ c = yaml.safe_load(open(p)) or {}
 a = c.setdefault("agent", {})
 dt = a.get("disabled_toolsets")
 dt = dt if isinstance(dt, list) else []
-if "delegation" not in dt:
-    dt.append("delegation")
+# browser/browser-cdp: the image ships no node and no Chromium (see Dockerfile). hermes would
+# report these unavailable anyway, but "unavailable" is decided by a presence check that its
+# own lazy installer is allowed to FIX at runtime -- which is how a fresh PVC ended up paying
+# a 2m34s download on its first message. Disabling the toolsets is the part that actually
+# guarantees the installer never fires.
+want = ["delegation", "browser", "browser-cdp"]
+missing = [x for x in want if x not in dt]
+if missing:
+    dt.extend(missing)
     a["disabled_toolsets"] = dt
     yaml.safe_dump(c, open(p, "w"), default_flow_style=False, allow_unicode=True, sort_keys=False)
 PY
-  echo "==> enforced: agent.disabled_toolsets includes 'delegation' (subagents OFF); compression left ENABLED"
+  echo "==> enforced: agent.disabled_toolsets = delegation (subagents OFF) + browser/browser-cdp (no node/Chromium in image); compression left ENABLED"
 
   # model.default = ARK_MODELS[0] on EVERY boot. ARK_MODELS is the single source of truth for the
   # chat model (set in the Dockerfile ENV); the default is always its FIRST entry. Enforced here too

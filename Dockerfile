@@ -193,74 +193,29 @@ ENV ARK_MODELS=doubao-seed-evolving,deepseek-v4-pro-260425
 # skill as "local/enabled" (verified). This keeps robot_sft OFF the PVC so it tracks
 # the image and updates on every rollout — instead of a real copy on the PVC that the
 # entrypoint would shadow forever (the entrypoint force-relinks on each boot too).
-# Node comes from the CN mirror the build pool already uses for apt and PyPI. install.sh
-# hardcodes https://nodejs.org/dist/ with no env override, and that download is the slow half
-# of this step from CN — but its `browser` path runs `check_node` first and only fetches node
-# when it is missing, so putting node here makes it skip straight to the browser. NPM_CONFIG_REGISTRY
-# covers the npm side of that remaining half.
-ARG NODE_VERSION=v22.16.0
-ARG NODE_MIRROR=https://mirrors.volces.com/nodejs-release
-ARG NPM_MIRROR=https://registry.npmmirror.com
-# Chrome itself is the remaining slow download: agent-browser pulls Chrome-for-Testing through
-# @puppeteer/browsers, which fetches from storage.googleapis.com. PUPPETEER_DOWNLOAD_BASE_URL
-# redirects that at npmmirror's mirror of the same tree (verified to carry the exact build the
-# installer asks for). If a future Chrome build is ever missing there the download falls back
-# to being slow, not broken — the `test -e agent-browser` gate below still decides the build.
-ARG CHROME_MIRROR=https://registry.npmmirror.com/-/binary/chrome-for-testing
-
 # Then snapshot the seeded home (config + the symlink) to /opt/hermes-seed for the
 # fresh-PVC path. NO GitHub at build OR runtime.
 # (No `|| true`: if the skill can't be linked, fail the build loudly.)
+#
+# NO node, NO Chromium. This used to install both (~764 MB: node 374 + Chromium 390) so a fresh
+# PVC would not pay a 2m34s download on its first message. Measured on the running pod, that
+# whole stack was dead weight:
+#   * hermes itself reported the toolsets unavailable — check_browser_requirements() is False
+#     because the `agent-browser` CLI is not on PATH, so the model was never offered
+#     browser_navigate/click/type at all.
+#   * the bundled Chrome could not even exec: 10 missing shared objects (libnspr4, libnss3,
+#     libatk-1.0, libcups, libXcomposite, libatspi …) that this base image does not carry.
+# So the fast-first-message fix worked by making hermes stop TRYING to install a browser, not by
+# giving it a working one. Nothing else needs node: the TUI does not reference it and no
+# npx-backed MCP server is configured. The entrypoint now disables the browser/browser-cdp
+# toolsets explicitly, which is what actually guarantees the lazy installer never fires.
 RUN mkdir -p "${HERMES_HOME}/skills" \
     && ln -sfn /opt/agent-console/vendor/robot_sft "${HERMES_HOME}/skills/robot_sft" \
     && hermes config set model.provider custom \
     && hermes config set model.base_url https://ark.cn-beijing.volces.com/api/v3 \
     && hermes config set model.default "$(printf '%s' "$ARK_MODELS" | cut -d, -f1)" \
     && hermes skills list | grep -qi robot_sft \
-    && NODE_TARBALL="node-${NODE_VERSION}-linux-x64.tar.xz" \
-    && wget -q "${NODE_MIRROR}/${NODE_VERSION}/${NODE_TARBALL}" -O /tmp/node.tar.xz \
-    && mkdir -p "${HERMES_HOME}/node" \
-    && tar -xJf /tmp/node.tar.xz -C "${HERMES_HOME}/node" --strip-components=1 \
-    && rm -f /tmp/node.tar.xz \
-    && "${HERMES_HOME}/node/bin/node" --version \
-    && PATH="${HERMES_HOME}/node/bin:${PATH}" NPM_CONFIG_REGISTRY="${NPM_MIRROR}" \
-       PUPPETEER_DOWNLOAD_BASE_URL="${CHROME_MIRROR}" HOME="${HERMES_HOME}" \
-       bash "$(/opt/hermes/.venv/bin/python -c 'import hermes_cli,pathlib;print(pathlib.Path(hermes_cli.__file__).parent/"scripts"/"install.sh")')" \
-         --ensure browser \
-    && test -x "${HERMES_HOME}/node/bin/node" \
-    && test -e "${HERMES_HOME}/node/bin/agent-browser" \
-    && test -d "${HERMES_HOME}/.agent-browser/browsers" \
-    && cp -al "${HERMES_HOME}" /opt/hermes-seed
-
-# Node + agent-browser (~384 MB) are installed ABOVE, before the snapshot, so they land in
-# /opt/hermes-seed and reach a fresh PVC by local copy. Without this the first message to the
-# agent downloads them at runtime — 2m34s measured on a fresh PVC from CN, with the UI stuck on
-# "正在启动 Agent" the whole time.
-#
-# HERMES_DISABLE_LAZY_INSTALLS=1 (set above) does NOT prevent that: it is only read by
-# tools/lazy_deps.py, which guards lazy installs of Python backend packages. The browser comes
-# from hermes_cli/dep_ensure.py, where that variable appears zero times — and the ACP process
-# runs with `--accept`, so it installs without even prompting. The image was simply incomplete
-# and hermes finished itself at runtime.
-#
-# The `test -x` lines are the point of doing this at build time: if the install silently fails
-# (mirror down, npm hiccup) the BUILD fails here, instead of every fresh pod paying for a
-# download that may not even succeed.
-#
-# The snapshot uses `cp -al` — HARDLINKS, not copies. Both paths hold the same ~764 MB (node
-# 374 + Chromium 390), and at runtime the PVC mounts over /opt/data so that side is unreachable
-# anyway; without -l the image would carry the bytes twice and every pull would pay for a copy
-# nothing can read. Hardlinked files are stored once in the layer.
-# Safe because nothing writes to either path afterwards: the build is done, and the entrypoint
-# copies OUT of $SEED onto the PVC (a different filesystem), which creates fresh files rather
-# than following the link. Deleting the originals instead would also save the space, but would
-# leave `docker run` without a PVC staring at an empty /opt/data before the entrypoint runs.
-
-# $HERMES_HOME/node/bin is added to PATH below. hermes finds agent-browser by absolute path
-# (dep_ensure._has_hermes_agent_browser), but its `node` check is plain shutil.which("node") —
-# so without PATH, `hermes --tui` reports "Node.js is not installed" while node sits right
-# there, and offers to install it again.
-ENV PATH="/opt/data/node/bin:${PATH}"
+    && cp -a "${HERMES_HOME}" /opt/hermes-seed
 
 # --- assert the runtime wiring at BUILD time (fail fast if a venv is wrong) -- #
 # 1) server.py runs in the lerobot venv → must import aiohttp + yaml and parse.
