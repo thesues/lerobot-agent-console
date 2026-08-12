@@ -164,6 +164,12 @@ RUN /opt/hermes/.venv/bin/python scripts/patch_acp_interrupt.py
 # the user never saw. Makes it env-tunable (default 900s); the console waits 870s so the UI is
 # always the side that gives up first.
 RUN /opt/hermes/.venv/bin/python scripts/patch_acp_approval_timeout.py
+# Removing node/Chromium from the image is not enough: hermes reinstalls them at runtime, from
+# the AVAILABILITY check (browser_tool's binary resolver calls ensure_dependency on a miss), so
+# a fresh PVC grew 220 KB -> 897 MB during startup. disabled_toolsets cannot prevent it —
+# availability is computed for every toolset and filtered afterwards.
+ENV HERMES_NO_DEP_INSTALL=1
+RUN /opt/hermes/.venv/bin/python scripts/patch_acp_no_dep_install.py
 # NOTE: the old `patch_acp_autosave.py` (a 10s `save_session` daemon) is DELETED, not applied.
 # It resurrected deleted sessions: `save_session -> _persist` first "ensures the session record
 # exists" (acp_adapter/session.py) and so RE-INSERTS a row that was deleted out-of-band (UI or
