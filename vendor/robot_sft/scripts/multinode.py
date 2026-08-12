@@ -267,7 +267,15 @@ def cmd_check(a) -> int:
             print(f"[INFO] {w}: no /dev/infiniband/uverbs* — no RDMA, NCCL will use TCP")
 
         # 9. output_dir must NOT exist: lerobot-train aborts on an existing dir without --resume
-        if a.output_dir:
+        if a.output_dir and getattr(a, "resume", False):
+            # Inverted on purpose: on a resume the worker MUST have the checkpoint, because it
+            # reads it too — see cmd_resume. Only rank 0 ever wrote one.
+            _, out = run_remote(w, f"test -f {shlex.quote(a.output_dir)}/checkpoints/last/pretrained_model/"
+                                   f"train_config.json && echo ok || echo missing")
+            r.check(f"{w}: resume checkpoint present", out.strip().endswith("ok"),
+                    f"absent — run `multinode.py resume --worker {w} --output-dir {a.output_dir}` "
+                    f"first; every rank reads the checkpoint, only rank 0 writes it")
+        elif a.output_dir:
             rc, out = run_remote(w, f"test -e {shlex.quote(a.output_dir)} && echo exists || echo clean")
             r.check(f"{w}: output_dir clean", out.strip().endswith("clean"),
                     "exists — delete it on EVERY node or every retry fails identically")
@@ -301,7 +309,13 @@ def cmd_check(a) -> int:
     r.check(f"master: port {a.port} free", not out.strip(),
             out.strip() or "in use — give this run a distinct --main_process_port")
 
-    if a.output_dir:
+    if a.output_dir and getattr(a, "resume", False):
+        r.check("master: resume checkpoint present",
+                os.path.isfile(os.path.join(a.output_dir, "checkpoints", "last",
+                                            "pretrained_model", "train_config.json")),
+                "no checkpoints/last — if the run died before the first save_freq step there is "
+                "nothing to resume from; delete output_dir and start over")
+    elif a.output_dir:
         r.check("master: output_dir clean", not os.path.exists(a.output_dir),
                 "exists — delete it before launching")
 
@@ -594,6 +608,72 @@ def cmd_env(a) -> int:
     return 1 if failed else 0
 
 
+# ---------------------------------------------------------------------------- multi-node resume
+# Resuming a MULTI-NODE run needs one thing single-node resume does not: the checkpoint has to
+# exist on every node. lerobot writes it from rank 0 only —
+#     if cfg.save_checkpoint and is_saving_step:
+#         if is_main_process: save_checkpoint(...)
+# — but reads it from EVERY rank on the way back in:
+#     if cfg.resume and step > 0:
+#         saved_num_processes = load_training_num_processes(cfg.checkpoint_path)
+# and every rank builds the policy from `--config_path`. So a worker whose output_dir was never
+# written to dies immediately, while the master looks fine. (This is what the image bakes rsync
+# and pod-to-pod ssh for; nothing had actually used it.)
+#
+# Only `last` and its target are copied, not the whole checkpoints/ tree: for pi05 each one is
+# ~9 GB and the workers need exactly the one being resumed from.
+def _ckpt_paths(output_dir: str) -> tuple[str, str]:
+    return os.path.join(output_dir, "checkpoints"), os.path.join(output_dir, "checkpoints", "last")
+
+
+def cmd_resume(a) -> int:
+    r = Report()
+    ck_dir, last = _ckpt_paths(a.output_dir)
+
+    # 1. the master must actually have something to resume FROM.
+    rc, out = run_local(f"readlink {shlex.quote(last)} || true")
+    target = out.strip().splitlines()[-1] if out.strip() else ""
+    if not r.check("master: checkpoints/last exists", bool(target),
+                   f"no {last} — nothing to resume from. If the run died before the first "
+                   f"save_freq step there IS no checkpoint: delete output_dir and start over."):
+        return 1
+    step_dir = os.path.normpath(os.path.join(ck_dir, target))   # `last` is a RELATIVE symlink
+    cfg_json = os.path.join(step_dir, "pretrained_model", "train_config.json")
+    rc, out = run_local(f"test -f {shlex.quote(cfg_json)} && echo ok || echo missing")
+    if not r.check(f"master: {os.path.basename(step_dir)} complete", out.strip().endswith("ok"),
+                   f"{cfg_json} missing — the checkpoint was interrupted mid-write; "
+                   f"use the previous one under {ck_dir}/"):
+        return 1
+    rc, out = run_local(f"du -sh {shlex.quote(step_dir)} | cut -f1")
+    size = out.strip().splitlines()[-1] if out.strip() else "?"
+    print(f"[INFO] resuming from {step_dir} ({size})")
+
+    # 2. put it on every worker, byte-identical, with the `last` symlink recreated there.
+    for w in a.worker:
+        rc, _ = run_remote(w, f"mkdir -p {shlex.quote(ck_dir)}")
+        if not r.check(f"{w}: checkpoints dir", rc == 0):
+            continue
+        # -a keeps perms/times, --delete makes a retry idempotent rather than merging two
+        # half-copies. Errors are surfaced: a partial checkpoint fails LATER, on every rank.
+        cmd = (f"rsync -a --delete -e {shlex.quote(' '.join(['ssh', *SSH_OPTS]))} "
+               f"{shlex.quote(step_dir + '/')} root@{w}:{shlex.quote(step_dir)}/")
+        print(f"[INFO] {w}: copying {size} …")
+        rc, out = run_local(cmd, timeout=a.timeout)
+        if not r.check(f"{w}: checkpoint copied", rc == 0, out):
+            continue
+        rc, out = run_remote(w, f"cd {shlex.quote(ck_dir)} && ln -sfn {shlex.quote(target)} last && readlink last")
+        r.check(f"{w}: last -> {target}", out.strip().endswith(target), out)
+        rc, out = run_remote(w, f"test -f {shlex.quote(cfg_json)} && echo ok || echo missing")
+        r.check(f"{w}: train_config.json present", out.strip().endswith("ok"),
+                "the copy did not land — every rank reads this on resume")
+
+    print("\n=== resume command (same run_id, same output_dir — NOT a new run) ===")
+    print(f"  add to the rank-0 command:  --resume=true "
+          f"--config_path={cfg_json}")
+    print("  workers: identical, only --machine_rank differs")
+    return r.done("resume")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -605,6 +685,9 @@ def main() -> int:
         p.add_argument("--output-dir", default=None)
 
     c = sub.add_parser("check", help="all cross-node preflight gates (read-only)")
+    c.add_argument("--resume", action="store_true",
+                   help="this is a RESUME: output_dir must exist (with a checkpoint) on every "
+                        "node, instead of being absent")
     common(c)
     c.add_argument("--master", required=True, help="master address AS THE WORKERS REACH IT")
     c.add_argument("--dataset-root", default=None)
@@ -638,6 +721,14 @@ def main() -> int:
     ev.add_argument("--worker", action="append", default=[],
                     help="worker address (repeatable); the master is always included")
 
+    rs = sub.add_parser("resume", help="copy the master's checkpoint to every worker, then print "
+                                      "the resume command (multi-node resume needs it on ALL nodes)")
+    rs.add_argument("--worker", action="append", default=[], required=True,
+                    help="worker address (repeatable)")
+    rs.add_argument("--output-dir", required=True, help="the ORIGINAL run's output_dir")
+    rs.add_argument("--timeout", type=int, default=1800,
+                    help="seconds allowed for one checkpoint copy (default 1800; ~9GB for pi05)")
+
     la = sub.add_parser("launch", help="start workers over ssh; master runs under the watchdog")
     common(la)
     la.add_argument("--command", required=True,
@@ -648,7 +739,7 @@ def main() -> int:
     if a.cmd == "env" and a.action in ("set", "unset") and len(a.name) != 1:
         ap.error(f"`env {a.action}` takes exactly one variable name")
     return {"check": cmd_check, "status": cmd_status, "rdma": cmd_rdma, "env": cmd_env,
-            "clean": cmd_clean, "launch": cmd_launch}[a.cmd](a)
+            "resume": cmd_resume, "clean": cmd_clean, "launch": cmd_launch}[a.cmd](a)
 
 
 if __name__ == "__main__":
