@@ -219,11 +219,12 @@ RUN mkdir -p "${HERMES_HOME}/skills" \
     && rm -f /tmp/node.tar.xz \
     && "${HERMES_HOME}/node/bin/node" --version \
     && PATH="${HERMES_HOME}/node/bin:${PATH}" NPM_CONFIG_REGISTRY="${NPM_MIRROR}" \
-       PUPPETEER_DOWNLOAD_BASE_URL="${CHROME_MIRROR}" \
+       PUPPETEER_DOWNLOAD_BASE_URL="${CHROME_MIRROR}" HOME="${HERMES_HOME}" \
        bash "$(/opt/hermes/.venv/bin/python -c 'import hermes_cli,pathlib;print(pathlib.Path(hermes_cli.__file__).parent/"scripts"/"install.sh")')" \
          --ensure browser \
     && test -x "${HERMES_HOME}/node/bin/node" \
     && test -e "${HERMES_HOME}/node/bin/agent-browser" \
+    && test -d "${HERMES_HOME}/.agent-browser/browsers" \
     && cp -a "${HERMES_HOME}" /opt/hermes-seed
 
 # Node + agent-browser (~384 MB) are installed ABOVE, before the snapshot, so they land in
