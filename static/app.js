@@ -392,12 +392,15 @@
   let pendingEl = null;   // initial "思考中" placeholder, removed on the first content
   function rm(el) { if (el) el.closest(".msg").remove(); }
 
-  function startTurn(booting) {
+  function startTurn(booting, resumed) {
     curSeg = null; toolEls = {};
-    pendingEl = addMsg("bot", booting ? "正在启动 Agent" : "思考中");
+    // `resumed` = we reconnected INTO a turn that was already running. Its earlier output went to
+    // the socket that died and cannot be replayed, so do not pretend this is a fresh turn: just
+    // re-arm the busy state so the tokens still to come actually render.
+    pendingEl = addMsg("bot", resumed ? "（重新连接,该轮仍在进行）" : booting ? "正在启动 Agent" : "思考中");
     pendingEl.classList.add("thinking");
     setBusy(true);                    // arms the status bar + spinner for the whole turn
-    setRunStatus(booting ? "正在启动 Agent" : "思考中");
+    setRunStatus(resumed ? "重新连接,该轮仍在进行" : booting ? "正在启动 Agent" : "思考中");
   }
   function clearPending() { if (pendingEl) { rm(pendingEl); pendingEl = null; } }
 
@@ -837,7 +840,13 @@
         case "history_done": histDone(); break;
       }
     };
-    chatWS.onclose = () => { if (sessionActive) setTimeout(() => sessionActive && connectChat(), 1500); };
+    chatWS.onclose = () => {
+      // The spinner runs off a local interval, so it keeps turning after the socket dies and the
+      // page looks busy forever. Say what actually happened; the server keeps the turn alive and
+      // re-announces it on reconnect.
+      if (busy) setRunStatus("连接已断开,正在重连…");
+      if (sessionActive) setTimeout(() => sessionActive && connectChat(), 1500);
+    };
   }
 
   function send() {

@@ -799,7 +799,14 @@ async def handle_chat(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse(heartbeat=30, max_msg_size=8 * 1024 * 1024)
     await ws.prepare(request)
     acp: HermesACP = request.app["acp"]
-    turn: dict[str, asyncio.Task | None] = {"task": None}
+    # The in-flight turn belongs to the SESSION, not to the socket that started it. As a local it
+    # was cancelled in this handler's `finally`, i.e. the moment the browser's websocket dropped —
+    # a reload, a laptop sleep, a flaky link. Cancelling `acp.prompt()` does NOT stop hermes (no
+    # session/cancel is sent), it only clears on_update, so hermes kept working while its output
+    # went nowhere: the page reconnected 1.5s later, saw turn["task"] is None, and sat there with
+    # the spinner still turning on the last frame it ever received. That is the "UI 没有响应" —
+    # measured with hermes at API call #109 while the browser was frozen on a 13-minute-old card.
+    turn: dict[str, asyncio.Task | None] = request.app.setdefault("chat_turn", {"task": None})
 
     # A pending permission must OUTLIVE the socket that asked about it.
     #
@@ -827,21 +834,30 @@ async def handle_chat(request: web.Request) -> web.WebSocketResponse:
             except Exception:  # noqa: BLE001
                 sockets.discard(sock)
 
+    # Tell a reconnecting page what it is walking into. Without this it renders idle while a
+    # turn streams into the void, and the only cure is a manual refresh (which merely re-reads
+    # the transcript — it does not re-attach to the live turn).
+    _t = turn["task"]
+    if _t and not _t.done():
+        with contextlib.suppress(Exception):
+            await ws.send_json({"type": "start", "booting": False, "resumed": True})
     # Replay anything still awaiting an answer, so a reconnecting page is not silently stuck.
     for entry in list(pending.values()):
         with contextlib.suppress(Exception):
             await ws.send_json(entry["msg"])
 
     async def on_update(u: dict) -> None:
+        # broadcast, not ws.send_json: a turn outlives the socket that started it, and its output
+        # must reach whoever is connected NOW rather than a socket that may already be closed.
         kind = u.get("sessionUpdate")
         if kind == "agent_message_chunk":
-            await ws.send_json({"type": "token", "text": _chunk_text(u)})
+            await broadcast({"type": "token", "text": _chunk_text(u)})
         elif kind == "agent_thought_chunk":
-            await ws.send_json({"type": "thought", "text": _chunk_text(u)})
+            await broadcast({"type": "thought", "text": _chunk_text(u)})
         elif kind in ("tool_call", "tool_call_update"):
-            await ws.send_json({"type": "tool", "title": u.get("title", ""),
-                                "status": u.get("status", ""), "id": u.get("toolCallId", ""),
-                                "detail": _tool_detail(u)})
+            await broadcast({"type": "tool", "title": u.get("title", ""),
+                             "status": u.get("status", ""), "id": u.get("toolCallId", ""),
+                             "detail": _tool_detail(u)})
 
     async def on_permission(params: dict):
         # Ask the user (no --yolo): forward options, await their pick.
@@ -916,16 +932,16 @@ async def handle_chat(request: web.Request) -> web.WebSocketResponse:
     async def run_turn(text: str) -> None:
         # Booting = hermes not up yet (first turn / after a respawn): the
         # ensure() inside prompt() will spend a few seconds starting it.
-        await ws.send_json({"type": "start", "booting": not (acp.alive and acp.session_id)})
+        await broadcast({"type": "start", "booting": not (acp.alive and acp.session_id)})
         try:
             result = await acp.prompt(text, on_update, on_permission)
             if isinstance(result, dict) and result.get("_error"):
-                await ws.send_json({"type": "error", "error": str(result["_error"])})
+                await broadcast({"type": "error", "error": str(result["_error"])})
             else:
-                await ws.send_json({"type": "done", "stopReason": (result or {}).get("stopReason")})
+                await broadcast({"type": "done", "stopReason": (result or {}).get("stopReason")})
         except Exception as e:  # noqa: BLE001
             log.exception("chat turn failed")
-            await ws.send_json({"type": "error", "error": str(e)})
+            await broadcast({"type": "error", "error": str(e)})
 
     try:
         async for msg in ws:
@@ -1007,10 +1023,11 @@ async def handle_chat(request: web.Request) -> web.WebSocketResponse:
             # Run the turn as a task so this loop keeps reading (stop / permission).
             turn["task"] = asyncio.create_task(run_turn(text))
     finally:
+        # Deliberately does NOT cancel turn["task"]. A dropped socket is not a request to abort
+        # the agent — it is a reload, a sleeping laptop, a flaky link. Cancelling here left
+        # hermes running with nowhere to send its output, which is precisely the frozen UI.
+        # Stopping a turn is an explicit act: the Stop button, or a session switch.
         sockets.discard(ws)
-        t = turn["task"]
-        if t and not t.done():
-            t.cancel()
         if not ws.closed:
             await ws.close()
     return ws

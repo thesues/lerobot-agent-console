@@ -394,6 +394,20 @@ to take >30 s shows the user NOTHING until it ends — it looks dead/stuck. Inst
    verdict / summary appears in the log), then report the full result.
 Never leave the user >60 s without a visible progress update during any slow stage.
 
+**🚫 Never use the `process` tool's `wait` action for this.** It BLOCKS — up to
+`TERMINAL_TIMEOUT`, 180 s by default — and emits nothing while it does: no tokens, no tool
+updates, no log tail. Three minutes of that is indistinguishable from a hung agent, and
+repeating it (`wait` → timeout → `wait` → …) is how a 2-step smoke test turned into 13 minutes
+of a motionless UI when the run itself had already finished. Worse, it keeps blocking after the
+process is GONE: the wait ends on its own timer, not on the process dying.
+Use the non-blocking actions — `process` supports
+`list · poll · log · wait · kill · write · submit · close`:
+- **`poll`** — instant status + the tail of new output. This is the polling primitive.
+- **`log`** — full output with pagination, when the tail is not enough.
+- plain `tail -5 <logfile>` is equally fine and is what the steps above assume.
+Between polls, RELAY the newest progress line to the user. `wait` is defensible only for
+something known to finish in seconds, and `poll` is better even then.
+
 **Camera pre-check (finetuning a pretrained VLA).** When `--policy.path` is a pretrained
 checkpoint (`lerobot/pi05_base`, `pi0_base`, `smolvla_base`, …), both `plan_training.py`
 and `preflight.py` run `scripts/check_features.py` — a 1-second static compare of the dataset's
