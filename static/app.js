@@ -539,6 +539,16 @@
     body.scrollTop = body.scrollHeight;
   }
   const permShown = new Set();
+  let awaitingPerm = false;
+  // "Waiting for the MODEL" and "waiting for YOU" are opposite situations that looked
+  // identical: same spinner, same red stop button. So the approval card got read as ordinary
+  // thinking and nobody answered it until it timed out. The turn IS still in flight (stop stays
+  // available), but the spinner must stop claiming work is happening.
+  function setAwaitingPerm(on) {
+    awaitingPerm = on;
+    if (on) { stopSpin(); setRunStatus("⚠️ 等待你的授权 —— 请点上方的按钮"); }
+    else if (busy) { startSpin(); setRunStatus("思考中"); }
+  }
   function addPermission(m) {
     // The server REPLAYS outstanding requests (on reconnect, and when you type while one is
     // waiting), so the same reqId can arrive more than once. Render it once; if it is already
@@ -553,7 +563,7 @@
     // reading is what kept the approval from being answered until it timed out.
     finalizeSeg();
     clearPending();
-    setRunStatus("等待你的授权");
+    setAwaitingPerm(true);
     const bubble = addMsg("bot", "");
     if (m.reqId) bubble.dataset.permReq = m.reqId;
     bubble.classList.add("perm");
@@ -566,6 +576,7 @@
       b.textContent = o.name || o.optionId;
       b.onclick = () => {
         chatWS.send(JSON.stringify({ type: "permission_response", reqId: m.reqId, optionId: o.optionId }));
+        setAwaitingPerm(false);
         box.querySelectorAll("button").forEach((x) => (x.disabled = true));
         b.classList.add("chosen");
       };
@@ -584,6 +595,9 @@
       pendingEl = null;
     }
     setBusy(false);
+    // The turn is over, so nothing is waiting on the user any more — whether they answered,
+    // let it time out, or stopped it. Leaving this set would wedge the composer.
+    awaitingPerm = false;
   }
 
   /* ---------------------------------------------------------- chat sessions */
@@ -828,7 +842,16 @@
 
   function send() {
     const text = textEl.value.trim();
-    if (!text || busy) return;
+    if (!text) return;
+    if (awaitingPerm) {
+      // Was a silent return: you type, press Enter, nothing happens, and the reason (an
+      // approval is blocking the agent) is invisible. Point at it instead.
+      const card = document.querySelector("[data-perm-req]");
+      if (card) card.scrollIntoView({ block: "nearest" });
+      setRunStatus("⚠️ 先回答上方的授权请求,agent 才能继续");
+      return;
+    }
+    if (busy) return;
     if (!chatReady) { pendingText = text; openKeyModal(); return; }
     addMsg("user", text);
     textEl.value = ""; textEl.style.height = "auto";
