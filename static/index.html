@@ -16,9 +16,9 @@
       <span class="brand-name">LeRobot</span>
       <span class="brand-badge">Agent Console</span>
     </div>
-    <div class="top-right">
-      <span class="node-pill"><i class="dot dot-green"></i> <span id="node-label">console</span> · 已连接</span>
-    </div>
+    <!-- No connection pill here: it was static markup, so the dot was green and the text said
+         "已连接" even when nothing was. The live indicator is #chat-status in the chat header,
+         which app.js actually drives. -->
   </header>
 
   <main class="grid" id="grid">
