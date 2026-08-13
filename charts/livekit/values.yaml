@@ -3,8 +3,9 @@ nameOverride: ""
 image:
   repository: docker.m.daocloud.io/livekit/livekit-server   # daocloud mirror (CN)
   # Pin a version. `latest` means a restart can silently move a PUBLIC SFU to a new server
-  # build — including across a breaking change — at a moment nobody chose.
-  tag: v1.9.1
+  # build — including across a breaking change — at a moment nobody chose. This is the version
+  # the running deployment resolved `latest` to, so pinning it changes nothing today.
+  tag: v1.13.5
   pullPolicy: IfNotPresent
 
 # The ICE candidate address clients are told to connect to. It must be the CLB's PUBLIC IP, not
@@ -33,8 +34,6 @@ nodeIp: ""
 # not installable there.)
 auth:
   keys: ""
-  existingSecret: ""      # bring your own instead; must have the key named below
-  existingSecretKey: keys
 
 service:
   # REQUIRED, and specific to your cluster: the CLB is created from this subnet, which must be
