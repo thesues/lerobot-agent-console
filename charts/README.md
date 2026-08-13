@@ -6,6 +6,12 @@ why this chart creates everything it needs — nothing here says "run `kubectl c
 first", because on that page you cannot.
 
 `values.yaml` therefore ships **installable-anywhere defaults**, not our deployment:
+- `image.tag` is empty and required. The chart deliberately does not track the image: the
+  pipeline tags every build with its commit sha and publishes no `latest`, so pinning one here
+  would mean republishing the chart for every build. Chart version and image version are
+  different things. Pass `--set image.tag=<sha>` (or set it in the values box), and check the
+  tag exists first — `oras repo tags <repo>` — because a sha that was never built gives
+  ImagePullBackOff.
 - `auth.password` is empty and the install FAILS with a message until you set it. This console
   hands out a root shell on a GPU node; it must not come up reachable without credentials.
 - `nodeSelector: {}` — the GPU request schedules the pod. A hostname from our cluster would
@@ -14,6 +20,22 @@ first", because on that page you cannot.
   gateway to use: `create: false` + `existingId` adopts one from the APIG console, `create: true`
   + `subnetIds` provisions a new one. ⚠️ A provisioned gateway is deleted by `helm uninstall`,
   taking its `*.volceapi.com` domain with it.
+
+  **`create: true` is a two-step bootstrap.** The Ingress binds to a gateway through a
+  `loadbalancer-id` annotation, and that id does not exist until the gateway has been
+  provisioned — so the first render cannot carry it. Verified on a real install: without it the
+  Ingress never gets an address and APIG lists no service for the gateway; setting the id made
+  both appear within a minute. After the first install:
+
+  ```bash
+  kubectl get apiginstance <release>-apig -o jsonpath='{.status.id}'
+  ```
+  put that in `apig.existingId` (leave `create: true`) and upgrade.
+
+  The gateway's public `*.volceapi.com` name is assigned by APIG and is **not exposed anywhere in
+  Kubernetes** — not in the CRD status, not on the Ingress. Read it from the APIG console. For
+  anything long-lived, bind your own domain there and CNAME it, so the URL survives the
+  gateway.
 - `livekit.nodeIp` may be left empty: an init container waits for the chart's own CLB to be
   assigned a public IP and hands it to the server. Set it explicitly once the IP is known and the
   init container plus its RBAC disappear.

@@ -1,28 +1,37 @@
-# Defaults describe the DEV console. The test console is the same chart with values-test.yaml,
-# whose only real difference is the name — dev and test were byte-identical apart from that,
-# which is the whole reason this is one chart instead of two manifests kept in sync by hand.
+# Defaults are installable-anywhere, NOT our deployment: no node pin, APIG off, and the two
+# credentials empty so the install fails loudly rather than coming up unauthenticated.
+# Set auth.password before deploying; everything else works as-is on a GPU cluster.
 
-# Pinned, NOT derived from the release name — these are two fixed environments, not arbitrary
-# releases, and the resource name determines the PVC name (hermes-home-<name>-0) and the pod
-# DNS the multi-node training addresses. Changing it strands the old disk and creates an empty
-# one, so it must never drift by accident.
 # Resource names come from the RELEASE name. Pinning a literal here — which this chart used to
 # do — means every install produces the same names no matter what you call the release, so a
 # second copy collides with the first ("invalid ownership metadata") and the chart can only ever
 # exist once per namespace. Our own releases are already named for what they deploy
 # (lerobot-agent-console, lerobot-agent-console-test), so the rendered names are unchanged.
+# ⚠️ The name also determines the PVC (hermes-home-<name>-0) and the pod DNS that multi-node
+# training addresses, so renaming an EXISTING release strands its disk and starts on an empty
+# one. Pick the release name deliberately; do not rename later.
 nameOverride: ""
 
 image:
   repository: iaas-us-cn-beijing.cr.volces.com/physicalai/lerobot-agent-console
-  tag: 6e9f46d4aa07be24c21e0ba711f7a14a93dd9420   # keep in sync with what is deployed
+  # REQUIRED, and deliberately empty: the chart does not track the image. The pipeline tags every
+  # build with its commit sha (there is no `latest`), so a hardcoded tag here means republishing
+  # the chart for every build — the chart version and the image version are not the same thing
+  # and should not be tied together.
+  #
+  # Pass it at deploy time: `--set image.tag=<sha>`, or edit this line in the values box on the
+  # VKE console's Helm page. Find the sha in the CP pipeline's build record, or list them:
+  #   oras repo tags iaas-us-cn-beijing.cr.volces.com/physicalai/lerobot-agent-console
+  # ⚠️ Verify the tag exists before deploying — a sha that was never built gives
+  # ImagePullBackOff, and if you have just deleted the PVC there is nothing to roll back to.
+  tag: ""
   pullPolicy: IfNotPresent
 
-# Both consoles are pinned to the H20 box. ebs-* volumes are ZONAL, so a PVC bound in another
-# zone can never attach here — moving nodes means recreating the PVC empty.
 # Empty on purpose. The GPU request below is what schedules this pod, so pinning a node is never
 # required — and a hostname from one cluster leaves the pod Pending forever on any other. Fill it
 # only to force a specific machine: nodeSelector: { kubernetes.io/hostname: "192.168.1.2" }
+# ⚠️ Worth doing once a PVC exists: ebs-* volumes are ZONAL, so a pod rescheduled to another
+# zone can never attach the disk it already has.
 nodeSelector: {}
 
 resources:
@@ -73,9 +82,6 @@ env:
   - { name: HERMES_CHAT_SKILL, value: robot_sft }
   - { name: HERMES_HOME, value: /opt/data }
 
-# Public entry point. ONLY the Ingress (routing) is templated — the APIGInstance CRD that
-# provisions the gateway and owns its *.volceapi.com domain stays in k8s/, because a stray
-# `helm uninstall` would delete the gateway and take the domain with it.
 # Public HTTPS entry point through Volcengine APIG. OFF by default so a first install succeeds
 # on any cluster; the console is reachable in-cluster either way. Turn it on once you know which
 # gateway it should use.
@@ -87,6 +93,13 @@ apig:
   #                    the APIG console, in existingId.
   #   create: true  -> PROVISION a new one (CRD sets spec.name + spec.common). subnetIds is then
   #                    REQUIRED and must be in this cluster's VPC. Takes a few minutes, and bills.
+  #
+  # ⚠️ create=true is a TWO-STEP bootstrap, because the gateway's id does not exist until it has
+  #    been provisioned, and the Ingress needs that id to bind to it. After the first install:
+  #      kubectl get apiginstance <release>-apig -o jsonpath='{.status.id}'
+  #    put that value in existingId (leaving create=true) and upgrade. Until you do, the Ingress
+  #    gets no address and APIG lists no service or domain for the gateway — verified, and it
+  #    resolves within a minute of the id being set.
   # ⚠️ A gateway this chart provisioned is DELETED by `helm uninstall`, taking its auto-assigned
   #    *.volceapi.com domain with it — a new one comes back under a different name. Adopt an
   #    existing gateway for anything whose URL people have bookmarked.

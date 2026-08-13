@@ -70,6 +70,13 @@ metadata:
     ingress.vke.volcengine.com/apig-instance-name: {{ $inst }}
     {{- if .Values.apig.existingId }}
     ingress.vke.volcengine.com/loadbalancer-id: {{ .Values.apig.existingId | quote }}
+    {{- else }}
+    {{/* create=true has no id to bind to yet — the gateway is provisioned by the APIGInstance
+         above and only gets one afterwards, so this annotation cannot be rendered on the first
+         pass. Measured: without it the Ingress never receives an address (status.loadBalancer
+         stays empty) and APIG creates no service or domain for it; adding the id by hand made
+         both appear within a minute. Hence the two-step in values.yaml — provisioning a gateway
+         is inherently a bootstrap, not a one-shot. */}}
     {{- end }}
     {{- with .Values.apig.annotations }}
     {{/* ⚠️ Helm DEEP-MERGES maps across values files: `annotations: {}` in an override does NOT
