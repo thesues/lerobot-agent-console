@@ -89,7 +89,9 @@ spec:
                  CreateContainerConfigError rather than start a public SFU with no credentials. */}}
             - name: LIVEKIT_KEYS
               valueFrom:
-                secretKeyRef: { name: {{ .Values.auth.secretName }}, key: {{ .Values.auth.secretKey }} }
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret | default (printf "%s-auth" $name) }}
+                  key: {{ if .Values.auth.existingSecret }}{{ .Values.auth.existingSecretKey }}{{ else }}keys{{ end }}
           ports:
             - { containerPort: {{ .Values.service.ports.signal }} }
             - { containerPort: {{ .Values.service.ports.rtcTcp }} }

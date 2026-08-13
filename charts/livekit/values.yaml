@@ -2,28 +2,49 @@ nameOverride: ""
 
 image:
   repository: docker.m.daocloud.io/livekit/livekit-server   # daocloud mirror (CN)
-  tag: latest
+  # Pin a version. `latest` means a restart can silently move a PUBLIC SFU to a new server
+  # build — including across a breaking change — at a moment nobody chose.
+  tag: v1.9.1
   pullPolicy: IfNotPresent
 
-# ⚠️ The ICE candidate address clients are told to connect to. It must be the CLB's PUBLIC IP,
-# not a pod/node IP, or media never establishes. Look it up AFTER the Service gets its IP:
-#   kubectl get svc livekit-clb -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
-# and pass it with --set nodeIp=<ip>. There is no sane default, so the chart fails without it.
+# The ICE candidate address clients are told to connect to. It must be the CLB's PUBLIC IP, not
+# a pod or node IP, or signalling succeeds and media never establishes.
+#
+# Leave it empty: an init container waits for this chart's own CLB to be assigned an IP and hands
+# it to the server. (Requiring it as input was circular — the chart creates that CLB, so the IP
+# does not exist until after the first install.) Setting it explicitly skips the wait and drops
+# the init container's ServiceAccount/Role along with it:
+#   kubectl get svc <release>-clb -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
 nodeIp: ""
 
-# Credentials come from a Secret, by environment — never from the ConfigMap below. LIVEKIT_KEYS
-# overrides config.yaml's `keys` block, and this chart deliberately ships NO fallback: the SFU
-# is on a public CLB, so any key written into a committed file is public knowledge. A missing
-# Secret must stop the pod rather than expose the server.
-#   kubectl create secret generic livekit-auth --from-literal=keys='<api_key>: <api_secret>'
+# API credentials. Set them — the chart refuses to install otherwise, and that is deliberate:
+# this SFU sits on a public CLB, so it must never come up with a guessable or absent key.
+#
+# Format is LiveKit's own `keys` map, one `api_key: api_secret` pair per line. Generate a secret
+# with something like `openssl rand -hex 32`; the same pair goes into every client's config.
+#
+#   keys: |
+#     devkey: <a long random string>
+#
+# The chart renders this into a Secret it owns and injects it as LIVEKIT_KEYS, which overrides
+# the ConfigMap's `keys` block — a key committed to a config file is a public key.
+# (It used to expect a hand-made Secret, with `kubectl create secret` in this comment. That
+# cannot be done from the VKE console's Helm page, which has no shell, so the chart was simply
+# not installable there.)
 auth:
-  secretName: livekit-auth
-  secretKey: keys
+  keys: ""
+  existingSecret: ""      # bring your own instead; must have the key named below
+  existingSecretKey: keys
 
 service:
-  # The CLB is created FROM this subnet id. Changing it provisions a NEW load balancer with a
-  # NEW public IP, which invalidates every client's --livekit-url. Treat it as immutable.
-  subnetId: subnet-13g74uz5gigw03n6nu4qbfl9s
+  # REQUIRED, and specific to your cluster: the CLB is created from this subnet, which must be
+  # in the cluster's VPC. The value below is an example from one account — it will not exist in
+  # yours, and the CLB then never gets an IP (the init container waits, then fails with that
+  # hint). Find it in the VPC console, or from an existing Service's annotations.
+  #
+  # ⚠️ Once a CLB exists, changing this provisions a NEW load balancer with a NEW public IP and
+  # invalidates every client's --livekit-url. Treat it as immutable after the first install.
+  subnetId: ""
   addressType: internet
   ports:
     signal: 7880    # WS signaling
