@@ -10,7 +10,7 @@ nameOverride: lerobot-agent-console
 
 image:
   repository: iaas-us-cn-beijing.cr.volces.com/physicalai/lerobot-agent-console
-  tag: ddf2f4279eba2532cc5ad9db468c80efd0aba2d3   # keep in sync with what is deployed
+  tag: 1888e8a2f904b016d32b2a2a596540060ce5de5b   # keep in sync with what is deployed
   pullPolicy: IfNotPresent
 
 # Both consoles are pinned to the H20 box. ebs-* volumes are ZONAL, so a PVC bound in another
