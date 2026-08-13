@@ -45,6 +45,15 @@ service:
   # invalidates every client's --livekit-url. Treat it as immutable after the first install.
   subnetId: ""
   addressType: internet
+
+  # Whether `helm uninstall` leaves the CLB behind (helm.sh/resource-policy: keep).
+  #
+  # true for anything real: the CLB holds a PUBLIC IP that every client has baked into its
+  # --livekit-url, it outlives any single release, and deleting it does not give the address
+  # back — a new one comes with a new IP and every robot pointing at the old one is broken.
+  # false for throwaway installs, where the leftover is a billed resource and an EIP out of
+  # quota that someone has to remember to delete by hand.
+  keepOnUninstall: true
   ports:
     signal: 7880    # WS signaling
     rtcTcp: 7881    # WebRTC over TCP (fallback)

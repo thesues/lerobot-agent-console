@@ -59,6 +59,11 @@ CLB's *ingress* IP was 115.190.7.216. Two different addresses; nothing listens o
 If the address matters long-term, allocate an EIP yourself and bind the CLB to it: `nodeIp` is
 then known before the first install and survives re-creating the release.
 
+`helm uninstall` deliberately leaves the CLB behind (`helm.sh/resource-policy: keep`), because
+deleting it does not give the public IP back and every client has that IP in its `--livekit-url`.
+For a throwaway install that protection is only a billed leftover and an EIP out of quota, so set
+`service.keepOnUninstall: false` and uninstall cleans up after itself.
+
 ### Deploying with the CLI instead
 
 There are no per-environment values files in this repo on purpose — an environment's file wants
