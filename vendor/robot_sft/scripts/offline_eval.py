@@ -9,7 +9,7 @@ action. Low MSE on *held-out* episodes = generalization; on train episodes it on
 memorization (lessons_learned #13).
 
 Run it from the lerobot checkout (/lerobot in the console pod) so its venv resolves:
-    cd /lerobot && uv run python <skill>/scripts/offline_eval.py \
+    cd /lerobot && python <skill>/scripts/offline_eval.py \
         --model-path <output_dir>/checkpoints/<N>/pretrained_model \
         --dataset-repo-id user/so101_pick [--dataset-root DIR] \
         --episodes 3 17 41 [--device cuda] [--max-frames-per-episode 450] \

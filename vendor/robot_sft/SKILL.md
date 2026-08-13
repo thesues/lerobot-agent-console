@@ -179,8 +179,8 @@ ds = StreamingTOSRobotDataset("tos://bucket/prefix/<name>")  # metadata only, no
 print(ds.num_frames, ds.num_episodes, ds.fps, ds.meta.camera_keys)
 ```
 Credentials come from the environment (`TOS_ACCESS_KEY` / `TOS_SECRET_KEY`, + optional
-`TOS_ENDPOINT` / `TOS_REGION`); they're exported in the pod's `~/.bashrc`. No `storage_options`
-plumbing needed (pass it only to override).
+`TOS_ENDPOINT` / `TOS_REGION`), installed with `multinode.py env set` (see Credentials).
+No `storage_options` plumbing needed (pass it only to override).
 
 ### c. Train/eval episode split  (always, unless the user opts out; conversion is conditional)
 Two responsibilities:
@@ -232,7 +232,8 @@ Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. Th
 - **Computes real steps from the data**, not lerobot's 100k default:
   `steps_per_epoch = ceil(num_frames / batch_size)`, `steps = epochs × steps_per_epoch`,
   with a sane epoch count for the dataset size. See `plan_training.py`.
-- Emits BOTH the **launch command** (with the train episode list inlined) and the
+- Emits `train_command` (the train episode list inlined) — which **the watchdog runs, never
+  you**; follow the plan's `how_to_launch` instead — and the
   **resume command** (`--resume=true --config_path=.../checkpoints/last/pretrained_model/
   train_config.json`) into `training_plan.json`.
 - **Sets the eval cadence from throughput** (lessons_learned #15): offline eval only fires
@@ -322,7 +323,7 @@ about-to-run values from `training_plan.json` (not the defaults) — at minimum:
   costs: changed numerics, and a checkpoint that only loads on a TE-enabled lerobot. Never enable
   fp8 without the user's explicit yes.
 - **output_dir**, the **GPU(s)** chosen, and the checkpoint **disk budget** `(steps/save_freq) × ckpt_size`
-- the exact **launch command** that will run
+- the exact `train_command` that the watchdog will run
 
 Then **ask the user to confirm or change it, and WAIT** — use `AskUserQuestion` if your runtime
 has it (e.g. options 「开始训练」/「修改参数」/「取消」), otherwise ask in plain chat and block on the
@@ -366,12 +367,6 @@ Then launch the monitors — three background processes, all communicating via f
      `python scripts/offline_eval.py --model-path <output_dir>/checkpoints/<STEP>/pretrained_model
      --dataset-repo-id <id> --episodes <held-out eps> --device cuda` (run it for the last 2–3
      checkpoints).
-   **⚠️ `offline_eval.py` does NOT support `tos://` dataset URLs** — it passes the repo_id
-   to HF Hub API which rejects object-store URLs (lessons_learned #19). For a TOS dataset,
-   the eval watcher will run but produce `mean_mse=None` for every checkpoint. Until fixed,
-   either download the dataset + use `--dataset.root`, or run manual eval per lessons_learned
-   #20 after training finishes. Poll `eval/eval_watcher.log` after the first checkpoint to
-   catch this early.
 
 You may either let `watchdog.py` run autonomously and poll its `run.json`, or drive the
 cadence yourself with `/loop` (re-invoking a status check every few minutes). Prefer the

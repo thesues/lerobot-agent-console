@@ -7,7 +7,7 @@ sample count, picks a sane epoch band for the dataset size, sizes the batch for 
 and policy family, and prints a ready-to-run `lerobot-train` command.
 
 Environment convention (console pod): the lerobot checkout lives at /lerobot (run commands
-from there via `uv run`), while ALL big artifacts — checkpoints, session state, HF caches —
+from there), while ALL big artifacts — checkpoints, session state, HF caches —
 live on the roomy /opt/data volume. Defaults below follow that.
 
 Usage:
@@ -397,15 +397,17 @@ def main() -> None:
         "train_command": cmd,
         "train_command_note": ("the watchdog runs this — do NOT run it directly; "
                                "see how_to_launch"),
+        # The eval step is filled in below, once eval_mode is known: prescribing a concurrent
+        # eval_watcher unconditionally would tell a single-GPU box to do the one thing SKILL.md
+        # forbids there (it would contend with training on the only GPU).
         "how_to_launch": [
             "python scripts/session.py add-run --session <session_dir>   # registers run_id",
             "python scripts/watchdog.py --session <session_dir> --run <run_id>   # runs train_command",
             "python scripts/monitor_server.py --session <session_dir>   # dashboard",
-            "python scripts/eval_watcher.py --session <session_dir> --run <run_id> --gpu <idle>",
         ],
     }
     if args.gpus > 1:
-        plan["multi_gpu_note"] = ("for multi-GPU use `uv run accelerate launch --num_processes="
+        plan["multi_gpu_note"] = ("for multi-GPU use `accelerate launch --num_processes="
                                   f"{args.gpus} $(which lerobot-train) ...` with the same flags; "
                                   "batch_size is per process")
     # Multi-NODE (cross-machine) template — only relevant when the user explicitly asks for cross-node
@@ -415,7 +417,7 @@ def main() -> None:
     # checkpoint to each worker first.
     plan["multi_node_note"] = (
         "CROSS-NODE (multi-machine): run the SAME lerobot-train flags on every node, wrapped as\n"
-        "  cd {repo} && uv run accelerate launch --multi_gpu --num_machines=<N> "
+        "  cd {repo} && accelerate launch --multi_gpu --num_machines=<N> "
         "--num_processes=<TOTAL_GPUS_ALL_NODES> --machine_rank=<R> --main_process_ip=<MASTER_IP> "
         "--main_process_port=29500 $(which lerobot-train) <same flags>\n"
         "  machine_rank: 0=master, 1,2,..=workers. num_processes=sum of GPUs across all nodes; "
@@ -431,7 +433,7 @@ def main() -> None:
         "CROSS-NODE RESUME: first scp {out}/checkpoints/<latest STEP> from the master to the SAME "
         "path on every worker. Then on EVERY node (same accelerate prefix, only --machine_rank "
         "differs):\n"
-        "  cd {repo} && uv run accelerate launch --multi_gpu --num_machines=<N> "
+        "  cd {repo} && accelerate launch --multi_gpu --num_machines=<N> "
         "--num_processes=<TOTAL_GPUS_ALL_NODES> --machine_rank=<R> --main_process_ip=<MASTER_IP> "
         "--main_process_port=29500 $(which lerobot-train) --resume=true "
         "--config_path={out}/checkpoints/last/pretrained_model/train_config.json\n"
@@ -463,6 +465,9 @@ def main() -> None:
     _spare = (_total_gpus - _train_gpus) if _total_gpus is not None else None
     if _spare is not None and _spare < 1:
         plan["eval_mode"] = "post_training"
+        plan["how_to_launch"].append(
+            "# NO eval_watcher during training (single GPU) — offline_eval the last checkpoints "
+            "after it finishes; see eval_gpu_note")
         _eps = ("--episodes " + " ".join(str(e) for e in eval_eps)) if eval_eps else \
                "--episodes <held-out eps>"
         plan["eval_gpu_note"] = (
@@ -476,6 +481,8 @@ def main() -> None:
             + f" {_eps} --device cuda")
     else:
         plan["eval_mode"] = "concurrent"
+        plan["how_to_launch"].append(
+            "python scripts/eval_watcher.py --session <session_dir> --run <run_id> --gpu <idle>")
         if _spare is None:
             plan["eval_gpu_note"] = ("could not detect total GPU count — confirm a SPARE idle GPU "
                                      "exists for the eval_watcher, otherwise eval after training.")

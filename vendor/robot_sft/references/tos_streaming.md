@@ -52,10 +52,10 @@ for item in ds:                    # IterableDataset: iterate, no ds[i]
     break
 ```
 
-**Scope:** `StreamingTOSRobotDataset` is a **standalone reader** — for dataset exploration,
-`offline_eval`, or a custom training loop. It is **not** wired into `lerobot-train`
-(`make_dataset` isn't patched), so to train on a TOS dataset either download it +
-`--dataset.root` (below), or drive a custom loop over `StreamingTOSRobotDataset`.
+**Scope:** `StreamingTOSRobotDataset` backs both the standalone readers (dataset exploration,
+`offline_eval`) and `lerobot-train` itself — `make_dataset` recognises a `tos://` repo_id, so
+training straight off TOS is the default path, not a workaround. Downloading + `--dataset.root`
+remains available if you want the data local.
 
 Notes: it's an **`IterableDataset`** (buffer-shuffled, no random index) — same trade-offs as
 `StreamingLeRobotDataset` (lessons_learned #13 caveats). Video decode needs **torchcodec**

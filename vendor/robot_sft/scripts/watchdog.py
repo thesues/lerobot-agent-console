@@ -296,7 +296,8 @@ def main() -> None:
     cmd = plan.get("train_command") or plan["launch_command"]
     output_dir = plan["output_dir"]
     resume_cmd = plan.get("resume_command") or (
-        f"cd {plan.get('repo', '/lerobot')} && uv run lerobot-train --resume=true "
+        f"cd {plan.get('repo', '/lerobot')} && python -u -m lerobot.scripts.lerobot_train "
+        f"--resume=true "
         f"--config_path={output_dir}/checkpoints/last/pretrained_model/train_config.json")
     # ---- CROSS-NODE (multi-node) mode ---------------------------------------------------
     # When training_plan.json carries a `multi_node` block (written by the agent per SKILL.md
