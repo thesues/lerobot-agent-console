@@ -436,7 +436,15 @@ def cmd_launch(a) -> int:
         # and lerobot then dies parsing YAML. The script body travels over stdin verbatim.
         # `-l` so ~/.bashrc creds (HF_TOKEN) load; redirect INSIDE the script so the log is created
         # on the WORKER (a master-side redirect leaves the worker log empty).
-        body = f"#!/usr/bin/env bash\nset -x\ncd /lerobot\nexec {cmd}\n"
+        # NO `exec`. It replaces the shell with a single program, but the command handed to
+        # `launch` is routinely COMPOUND — plan_training.py emits `cd /lerobot && python -u -m
+        # …`, so the worker ran `exec cd /lerobot && …` and bash answered `cd: not found`
+        # (`cd` is a builtin, there is nothing to exec). The worker died instantly, silently,
+        # and the master sat in the rendezvous waiting for a rank that no longer existed — which
+        # reads as "the smoke test is slow", on the node that is fine. `set -x` puts the failure
+        # in the worker log; without exec, a compound command just works.
+        body = (f"#!/usr/bin/env bash\nset -x\ncd /lerobot\n{cmd}\n"
+                f"echo \"[worker] exited rc=$?\"\n")
         rc, out = write_remote_file(w, script_path, body)
         if rc != 0:
             print(f"[worker {w}] ERROR writing {script_path}: {out}", file=sys.stderr)
