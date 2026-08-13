@@ -51,7 +51,7 @@ dshmSize: 32Gi
 # `kubectl create secret` first. A chart that requires one cannot be installed that way at all.
 # The chart renders these into a Secret it owns, so they are not left sitting in the pod spec.
 auth:
-  user: admin
+  user: lerobot
   password: ""
 
 env:
