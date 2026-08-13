@@ -36,41 +36,28 @@ first", because on that page you cannot.
   Kubernetes** — not in the CRD status, not on the Ingress. Read it from the APIG console. For
   anything long-lived, bind your own domain there and CNAME it, so the URL survives the
   gateway.
-- `livekit.nodeIp` is required, and getting it is a two-step bootstrap — see below.
+- `livekit.nodeIp` may be left empty: an init container waits for this chart's own CLB to be
+  assigned a public IP and passes it to the server. Set it explicitly to skip the wait — the
+  init container and its RBAC then disappear from the release.
 
 Cluster-specific values you will have to change regardless: `persistence.storageClass`,
 `livekit.service.subnetId`, and `image.repository` if you mirror the image.
 
-### LiveKit: the two-step CLB bootstrap
+### LiveKit: where nodeIp comes from
 
 `nodeIp` is the address LiveKit hands clients as their ICE candidate. It must be the **public IP
-of this release's CLB**, and the chart is what creates that CLB — so the value cannot exist
-before the first install:
+of this release's CLB**, and the chart is what creates that CLB — so the value does not exist
+until after the first install. An init container closes that gap: it waits for the Service to be
+assigned an address (up to 10 minutes, logging each attempt) and writes it out for the server.
+Setting `nodeIp` explicitly skips it, and the ServiceAccount/Role go with it.
 
-1. Install with any placeholder in `nodeIp`. The CLB is created and takes a minute or two to be
-   assigned an address. The server will be running but unusable until step 3, which is fine.
-2. Read the address:
-   ```bash
-   kubectl get svc <release>-clb -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
-   ```
-   or read it off the CLB console — no cluster access needed.
-3. Put it in `nodeIp` and upgrade. The pod restarts with the right candidate address.
+⚠️ **It cannot be discovered by STUN, and getting it wrong fails misleadingly**: signalling
+connects, the call looks alive, media never flows. LiveKit's `use_external_ip` finds the address
+by STUN — that is the pod's *egress* IP, which on this cluster measured 124.174.58.65 while the
+CLB's *ingress* IP was 115.190.7.216. Two different addresses; nothing listens on the egress one.
 
-⚠️ **It cannot be discovered automatically, and the failure mode if you get it wrong is
-misleading**: signalling connects, the call looks alive, and media never flows. LiveKit's
-`use_external_ip` finds the address by STUN — that is the pod's *egress* IP, which on this
-cluster measured 124.174.58.65 while the CLB's *ingress* IP was 115.190.7.216. Two different
-addresses; the egress one has nothing listening on it.
-
-An earlier version of this chart avoided the second step with an init container that polled the
-Kubernetes API for the Service's address. It worked, but it was a shell script parsing JSON with
-BusyBox tools, and it shipped two bugs before it ever succeeded — GNU wget flags on a BusyBox
-wget, then a pattern that assumed compact JSON while the API server pretty-prints. Both failed by
-looping quietly, indistinguishable from waiting. A value you can read and paste beats an
-automation you cannot debug from a values textarea.
-
-If the address matters long-term, allocate an EIP yourself and bind the CLB to it: then `nodeIp`
-is known before the first install, and it survives re-creating the release.
+If the address matters long-term, allocate an EIP yourself and bind the CLB to it: `nodeIp` is
+then known before the first install and survives re-creating the release.
 
 ### Deploying with the CLI instead
 
