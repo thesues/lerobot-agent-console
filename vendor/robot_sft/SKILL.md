@@ -29,14 +29,11 @@ distilled list of the failure modes above, each with the concrete check that pre
 
 ## Environment (console pod)
 
-- The **lerobot checkout is `/lerobot`** — run every lerobot command from there so the uv
-  venv resolves: `cd /lerobot && uv run lerobot-train ...` / `uv run python ...`.
-  In some environments `uv run` causes multi-process issues — use
-  `python -u -m lerobot.scripts.lerobot_train` instead (pass `--runner python-module` to
-  `plan_training.py` to auto-generate the correct command).
-  directly. **Do NOT use `uv run lerobot-train`** — `uv run` triggers multi-process issues
-  in this environment and the venv is already resolved. Similarly use `python` (not
-  `uv run python`) for scripts that import lerobot.
+- The **lerobot checkout is `/lerobot`** — run every lerobot command from there.
+  **Never `uv run`.** Its venv is already resolved, and `uv run` triggers multi-process issues
+  here. Use `python -u -m lerobot.scripts.lerobot_train …` for training and plain `python` for
+  scripts that import lerobot. `plan_training.py` emits this form by default (`--runner
+  python-module`); you should not have to think about it.
 - **All big artifacts live on `/opt/data`** (the roomy persistent volume): session state
   defaults to `/opt/data/robot_sft/` (via `session.py`), checkpoints to
   `/opt/data/robot_sft/runs/...` (via `plan_training.py`), and HF caches land under
@@ -254,20 +251,13 @@ Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. Th
 - **Flags (exact names):** `plan_training.py --dataset-repo-id <id|tos://…> --gpus <n>
   --gpu-mem-gb <g> --cuda <idx> --policy-type <act|…> [--policy-path <pretrained>]
   --episodes-file <session>/preprocess.json --output-dir <run_dir> [--out <path>]`.
-  Note **`--gpus`** (plural, GPU count) and **`--gpu-mem-gb`** — not `--gpu`;
-  `--cuda` is `CUDA_VISIBLE_DEVICES` (e.g. `0`). **Use `--out <file>` to write the
-  JSON plan directly** — do NOT use shell `>` redirection as a workaround; the script
-  now has an explicit `--out` flag. (Historical footgun: before `--out` existed,
-  argparse prefix-matched a mistyped `--out` to `--output-dir`, silently overwriting
-  the checkpoint path.)
-  - **Flags (exact names):** `plan_training.py --dataset-repo-id <id|tos://…> --gpus <n>
-    --gpu-mem-gb <g> --cuda <idx> --policy-type <act|…> [--policy-path <pretrained>]
-    --episodes-file <session>/preprocess.json --output-dir <run_dir>`. Note **`--gpus`** (plural,
-    GPU count) and **`--gpu-mem-gb`** — not `--gpu`; `--cuda` is `CUDA_VISIBLE_DEVICES` (e.g. `0`).
-    It **auto-reads `total_frames`/`total_episodes` from the dataset meta** (local, or stream-read
-    from a `tos://…/meta/info.json`), and with `--episodes-file` sizes the **train subset** — so
-    you normally don't pass `--samples`/`--episodes` (they're optional overrides). The generated
-    `lerobot-train` command already carries `--env_eval_freq=0` + `--policy.push_to_hub=false`.
+  Note **`--gpus`** (plural, GPU count) and **`--gpu-mem-gb`** — not `--gpu`; `--cuda` is
+  `CUDA_VISIBLE_DEVICES` (e.g. `0`). **Use `--out <file>` to write the JSON plan** — not shell
+  `>` redirection.
+  It **auto-reads `total_frames`/`total_episodes` from the dataset meta** (local, or stream-read
+  from a `tos://…/meta/info.json`), and with `--episodes-file` sizes the **train subset** — so
+  you normally don't pass `--samples`/`--episodes` (they're optional overrides). The generated
+  command already carries `--env_eval_freq=0` + `--policy.push_to_hub=false`.
   - **torch.compile is OFF by default** (it costs a multi-minute first-step warm-up). Whether it
     speeds a given run up has not been established here — don't claim either way without measuring
     that setup. Opt in with **`--compile`** for a VLA policy that supports it
@@ -355,8 +345,6 @@ Run `python scripts/check_hardware.py` and `python scripts/plan_training.py`. Th
     older GPUs (TE errors at runtime), so only pass it when `check_hardware` reports an H20/Hopper.
     preflight inherits it from the plan (`--session`). fp8 is mainly a **memory** lever — re-benchmark
     before assuming a speedup. See `references/policy_selection.md`.
-    **⚠️ Do NOT pass `--out` — argparse prefix-matches it to `--output-dir`, silently overriding
-    the output-dir you set. Redirect stdout with `> file` instead.**
 - Checks **GPU count + free memory** (pick idle GPUs), **disk space** for checkpoints
   (must be on `/opt/data` in the pod — and lerobot keeps EVERY checkpoint, no rotation,
   so budget `(steps/save_freq) × ckpt_size`), and **`/dev/shm` size**.
@@ -722,8 +710,8 @@ off this block. Store the addresses **exactly as the user gave them** (DNS name 
 "multi_node": {
   "master_addr": "…", "worker_addrs": ["…"], "gpus_per_node": 8,
   "num_machines": 2, "num_processes": 16,
-  "master_launch_command": "cd /lerobot && uv run accelerate launch --multi_gpu … --machine_rank=0 … $(which lerobot-train) <flags>",
-  "master_resume_command": "cd /lerobot && uv run accelerate launch --multi_gpu … --machine_rank=0 … $(which lerobot-train) --resume=true --config_path=<out>/checkpoints/last/pretrained_model/train_config.json"
+  "master_launch_command": "cd /lerobot && accelerate launch --multi_gpu … --machine_rank=0 … $(which lerobot-train) <flags>",
+  "master_resume_command": "cd /lerobot && accelerate launch --multi_gpu … --machine_rank=0 … $(which lerobot-train) --resume=true --config_path=<out>/checkpoints/last/pretrained_model/train_config.json"
 }
 ```
 ⚠️ If any address is a **pod IP**, it changes on pod restart — after a restart, re-confirm
@@ -734,7 +722,7 @@ names don't have this problem, which is why they're preferred.)
 `lerobot-train` flags `plan_training.py` emitted (steps/batch/dataset/policy/**output_dir**/…) and wrap
 them with the accelerate multi-node prefix:
 ```bash
-cd /lerobot && uv run accelerate launch \
+cd /lerobot && accelerate launch \
   --multi_gpu \
   --num_machines=<N> \
   --num_processes=<TOTAL GPUs across ALL nodes> \
@@ -902,9 +890,9 @@ the run). **Never on a worker** (no checkpoints, and it would contend with that 
   update-run). Use for all state changes. Defaults to `/opt/data/robot_sft` in the pod.
 - `scripts/check_hardware.py` — GPUs, free memory, disk, `/dev/shm`; prints JSON + warnings.
 - `scripts/plan_training.py` — compute steps/epochs/batch and emit the `lerobot-train`
-  launch + resume commands. Defaults to `python -u -m lerobot.scripts.lerobot_train`;
-  pass `--use-uv` for `uv run lerobot-train` (legacy envs). Use `--out <file>` to write
-  the JSON plan directly.
+  train + resume commands. Defaults to `python -u -m lerobot.scripts.lerobot_train`;
+  `--runner uv` switches to `uv run lerobot-train` (do not — see Environment). Use
+  `--out <file>` to write the JSON plan.
 - `scripts/split_train_eval.py` — deterministic held-out episode split (id lists only; no
   dataset copying — lerobot subsets via `--dataset.episodes`).
 - `scripts/preflight.py` — ~2-step smoke test of the real command (incl. one checkpoint
@@ -916,7 +904,7 @@ the run). **Never on a worker** (no checkpoints, and it would contend with that 
   exit 0).
 - `scripts/offline_eval.py` — open-loop replay of a checkpoint on held-out episodes
   (per-episode + mean MSE/MAE, optional gt-vs-pred plots). The lerobot answer to "no sim
-  env": run it under `cd /lerobot && uv run python ...`.
+  env": run it from `/lerobot` with plain `python`.
 - `scripts/eval_watcher.py` — periodic offline eval: scores each new checkpoint on the
   held-out episodes (separate GPU when available), saving metrics to
   `eval/eval_results.jsonl` and plots under `eval/artifacts/ckpt-N/<group>/`.
@@ -931,8 +919,8 @@ the run). **Never on a worker** (no checkpoints, and it would contend with that 
   stream a LeRobot v3.0 dataset from object storage (Volcengine **TOS** via `tosfs`, or S3)
   without downloading it. See "Streaming a dataset from TOS" below.
 
-Run scripts with `python` (or `uv run python` from /lerobot when they import lerobot —
-that's only `offline_eval.py`; the rest are stdlib). Scripts are designed to be executed
+Run scripts with `python`, from `/lerobot` for the ones that import lerobot (only
+`offline_eval.py`; the rest are stdlib). Scripts are designed to be executed
 for their output, not read into context — only open one if you need to adapt it.
 
 ## Streaming a dataset from TOS (object storage)
@@ -964,8 +952,8 @@ export TOS_ENDPOINT=https://tos-cn-beijing.volces.com   TOS_REGION=cn-beijing
 ```
 ⚠️ **The `~/.tosutilconfig` ak/sk are OBFUSCATED** (they don't start with `AKLT…` and 403
 if used raw) — `tosutil` de-obfuscates them internally, but the Python SDK / `tosfs` do NOT.
-Use the plaintext AK/SK from the Volcengine console / IAM (the pod's `~/.bashrc` exports them —
-`source ~/.bashrc` if a fresh shell doesn't have `$TOS_ACCESS_KEY`).
+Use the plaintext AK/SK from the Volcengine console / IAM, installed with
+`multinode.py env set TOS_ACCESS_KEY` (see Credentials) — never by editing an rc file.
 
 **3. The TOS fsspec impl (`tosfs`) is pre-installed** in the console image (registers the
 `tos://` protocol + TOS SDK), so `StreamingTOSRobotDataset` works out of the box. Only if you
@@ -1012,8 +1000,9 @@ cd /lerobot && HF_ENDPOINT=https://hf-mirror.com CUDA_VISIBLE_DEVICES=<gpu> pyth
   --dataset.episodes="[<train ids>]" --env_eval_freq=0 \
   --output_dir=<run_dir> --steps=<N> --batch_size=<B> --num_workers=<W> --save_freq=<F> --wandb.enable=false
 ```
-- Creds are read from env (`TOS_ACCESS_KEY`/`TOS_SECRET_KEY`[/`TOS_ENDPOINT`/`TOS_REGION`]); the
-  pod's `~/.bashrc` exports them (`source ~/.bashrc` in a fresh shell). `tosfs` is baked into the image.
+- Creds are read from env (`TOS_ACCESS_KEY`/`TOS_SECRET_KEY`[/`TOS_ENDPOINT`/`TOS_REGION`]),
+  installed with `multinode.py env set` (see Credentials) — every shell then has them, on every
+  node. `tosfs` is baked into the image.
 - Verified end-to-end: a real `lerobot-train` run on a `tos://` dataset spanning **both** video
   files (ep0 in file-000, ep40 in file-001) trained and checkpointed correctly. **`plan_training.py`
   emits the launch/resume commands as usual — just with the `tos://` repo_id.**
