@@ -8,14 +8,24 @@ image:
   tag: v1.13.5
   pullPolicy: IfNotPresent
 
-# The ICE candidate address clients are told to connect to. It must be the CLB's PUBLIC IP, not
-# a pod or node IP, or signalling succeeds and media never establishes.
+# REQUIRED: the ICE candidate address clients are told to connect to. It must be the PUBLIC IP
+# of this release's CLB — not a pod IP, not a node IP — or signalling succeeds and media never
+# establishes, which looks like the server working and the call being broken.
 #
-# Leave it empty: an init container waits for this chart's own CLB to be assigned an IP and hands
-# it to the server. (Requiring it as input was circular — the chart creates that CLB, so the IP
-# does not exist until after the first install.) Setting it explicitly skips the wait and drops
-# the init container's ServiceAccount/Role along with it:
-#   kubectl get svc <release>-clb -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+# The chart creates that CLB, so this is a TWO-STEP install:
+#   1. install with any placeholder here; the CLB is created and takes a minute or two to be
+#      assigned an address
+#   2. kubectl get svc <release>-clb -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+#      (or read it off the CLB console)
+#   3. put it here and upgrade
+#
+# It cannot be discovered automatically. LiveKit's use_external_ip finds the address via STUN,
+# i.e. the pod's EGRESS ip — measured on this cluster that is 124.174.58.65 while the CLB's
+# INGRESS ip is 115.190.7.216. Handing clients the egress address gives them somewhere nothing
+# listens. An earlier version of this chart polled the Kubernetes API from an init container
+# instead; it worked, but it was a shell script parsing JSON with BusyBox tools, and it shipped
+# two bugs (GNU wget flags, then a pattern that assumed compact JSON) before this line was
+# reached. A value you can read and paste is worth more than an automation you cannot debug.
 nodeIp: ""
 
 # API credentials. Set them — the chart refuses to install otherwise, and that is deliberate:
