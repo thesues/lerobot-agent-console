@@ -14,7 +14,7 @@ a bad kill, a camera key that doesn't match the policy, 100000 steps when the da
 concrete check that prevents it — see [`references/lessons_learned.md`](references/lessons_learned.md).
 
 > **Environment:** in the LeRobot Agent Console pod the lerobot checkout is `/lerobot` (run
-> commands from there via `uv run`) and all big artifacts (sessions, checkpoints, caches) live
+> commands from there with plain `python`, never `uv run`) and all big artifacts (sessions, checkpoints, caches) live
 > on the roomy `/opt/data` volume — the scripts default there. Outside the pod they default to
 > `./.robot_sft`.
 

@@ -15,8 +15,9 @@ Subcommands
   launch  start the workers (ssh) + print the master command, recording PIDs for `clean`
 
 Addresses are whatever the user gave (headless DNS preferred over pod IPs). Remote commands
-run through `bash -lc` so ~/.bashrc credentials (HF_TOKEN/HF_ENDPOINT) are actually loaded —
-a plain non-interactive ssh does NOT source them.
+run through `bash -lc` so the credentials installed by `env set` (HF_TOKEN/HF_ENDPOINT) are
+actually loaded — a login shell reads them via /etc/profile.d; a plain non-interactive ssh
+reads nothing at all.
 
     python multinode.py check --worker <addr> --master <addr> \
         --dataset-root /opt/data/ds --output-dir /opt/data/run1 \
@@ -60,7 +61,7 @@ def run_local(cmd: str, timeout: int = 60) -> tuple[int, str]:
 
 
 def run_remote(addr: str, cmd: str, timeout: int = 60) -> tuple[int, str]:
-    """Run cmd on `addr` under a LOGIN shell so ~/.bashrc creds load.
+    """Run cmd on `addr` under a LOGIN shell, so `env set` creds load via /etc/profile.d.
 
     The command is fed over STDIN (`bash -l -s`), never as an ssh argument. Passing it as an
     argument puts the text through TWO shell expansions on the remote side — sshd's own login
@@ -434,7 +435,8 @@ def cmd_launch(a) -> int:
         # Ship a SCRIPT, don't inline the command: flags like --dataset.episodes='[0, 1]' carry
         # quotes/brackets that get eaten when the text passes through ssh's argv + a remote shell,
         # and lerobot then dies parsing YAML. The script body travels over stdin verbatim.
-        # `-l` so ~/.bashrc creds (HF_TOKEN) load; redirect INSIDE the script so the log is created
+        # `-l` so `env set` creds (HF_TOKEN) load via /etc/profile.d; redirect INSIDE the script
+        # so the log is created
         # on the WORKER (a master-side redirect leaves the worker log empty).
         # NO `exec`. It replaces the shell with a single program, but the command handed to
         # `launch` is routinely COMPOUND — plan_training.py emits `cd /lerobot && python -u -m

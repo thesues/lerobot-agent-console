@@ -81,7 +81,8 @@ any retry), `launch` (start workers with correct redirects + recorded PIDs).
 Why these specific gates — each one is a failure we hit and misdiagnosed:
 - **Every rank builds the policy itself**, so the pretrained backbone must be cached on EVERY node
   and gated repos need `HF_TOKEN` there. A worker without them 403s seconds after launch. ⚠️ A
-  non-login ssh does **not** read `~/.bashrc`, so run remote commands through `bash -lc` or the
+  non-login ssh reads no rc file at all, so run remote commands through `bash -lc` (which picks
+  up `env set` credentials via /etc/profile.d) or the
   token is invisible even when it is configured.
 - **The master's disk filling during a checkpoint save surfaces as an NCCL *timeout on the worker***
   — it sends you to debug the wrong node. Only the master writes checkpoints, so budget

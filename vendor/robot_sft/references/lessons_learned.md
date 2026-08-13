@@ -191,8 +191,12 @@ which rejected `tos://` with `HFValidationError`, so `eval_results.jsonl` filled
 outlived the fix in three other places and was still being followed. If you see it again
 anywhere, it is stale — check `offline_eval.py` before believing it.
 
-## 20. Manual held-out eval on a TOS dataset (when offline_eval fails)
-When #19 blocks the eval watcher, run held-out eval manually. You need three things the eval_watcher normally does for you:
+## 20. What held-out eval has to get right (reference — normally use `offline_eval.py`)
+**Not a workaround.** `offline_eval.py` and `eval_watcher.py` handle TOS datasets and camera
+renames; use them. This entry survives because it spells out the three things they do for you,
+which is what you need if you are ever debugging a suspicious eval number or writing a one-off
+check. Its old framing ("when #19 blocks the eval watcher") described a bug that is fixed — do
+not take it as a reason to hand-roll eval.
 1. **Set `delta_timestamps` for chunked policies.** The training pipeline sets `delta_timestamps` from the policy config's `action_delta_indices` / `observation_delta_indices` via `factory.py`, but `StreamingTOSRobotDataset` does NOT auto-derive them. For ACT (`chunk_size=100`): `delta_timestamps = {'action': [i/fps for i in range(100)]}`. Without this, the dataset returns single actions `(6,)` but the model expects chunks `(100, 6)`.
 2. **Apply normalization from the checkpoint.** The model was trained on normalized data. The normalizer stats live in `<ckpt>/pretrained_model/policy_preprocessor_step_3_normalizer_processor.safetensors`. Load with `safetensors.torch.load_file()` and apply `(x - mean) / std.clamp_min(1e-8)` to `action`, `observation.state`, and each `observation.images.*` key before calling `policy.forward()`.
 3. **Use `policy.forward(batch)` for loss computation** — it handles the VAE KL term and `action_is_pad` mask correctly. Returns `(loss, loss_dict)` where `loss_dict['l1_loss']` is the per-step L1.
