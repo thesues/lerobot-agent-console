@@ -145,7 +145,8 @@ def main() -> None:
     plan = None
     if args.session:
         plan = json.load(open(os.path.join(args.session, "training_plan.json")))
-        cmd, real_out = plan["launch_command"], plan["output_dir"]
+        cmd = plan.get("train_command") or plan["launch_command"]   # renamed; older plans differ
+        real_out = plan["output_dir"]
     elif args.command:
         cmd, real_out = args.command, args.output_dir or ""
     else:

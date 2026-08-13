@@ -178,7 +178,8 @@ def cfg_steps(plan: dict) -> int | None:
         return v
     if isinstance(v, str) and v.isdigit():
         return int(v)
-    m = re.search(r"--steps[= ](\d+)", plan.get("launch_command") or "")
+    m = re.search(r"--steps[= ](\d+)",
+                  plan.get("train_command") or plan.get("launch_command") or "")
     return int(m.group(1)) if m else None
 
 
@@ -291,7 +292,8 @@ def main() -> None:
     poll = min(args.poll, 300)  # cadence must be <= 5 minutes
     session = args.session
     plan = read_json(os.path.join(session, "training_plan.json"))
-    cmd = plan["launch_command"]
+    # train_command since the rename; launch_command is what older plans on disk still carry.
+    cmd = plan.get("train_command") or plan["launch_command"]
     output_dir = plan["output_dir"]
     resume_cmd = plan.get("resume_command") or (
         f"cd {plan.get('repo', '/lerobot')} && uv run lerobot-train --resume=true "

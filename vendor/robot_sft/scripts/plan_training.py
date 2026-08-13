@@ -382,7 +382,20 @@ def main() -> None:
         "resume_command": (
             f"cd {args.repo} && {cuda}{runner_cmd} --resume=true "
             f"--config_path={out_dir}/checkpoints/last/pretrained_model/train_config.json"),
-        "launch_command": cmd,
+        # NOT "launch_command". That name is why the watchdog kept getting skipped: the plan is
+        # the artifact the agent copies from, and a field called launch_command reads as "the
+        # command to launch this run" — so it got pasted into a terminal, bare, and the run ended
+        # up with no stall detection and no auto-resume. This is what the WATCHDOG executes; the
+        # agent must never run it directly.
+        "train_command": cmd,
+        "train_command_note": ("the watchdog runs this — do NOT run it directly; "
+                               "see how_to_launch"),
+        "how_to_launch": [
+            "python scripts/session.py add-run --session <session_dir>   # registers run_id",
+            "python scripts/watchdog.py --session <session_dir> --run <run_id>   # runs train_command",
+            "python scripts/monitor_server.py --session <session_dir>   # dashboard",
+            "python scripts/eval_watcher.py --session <session_dir> --run <run_id> --gpu <idle>",
+        ],
     }
     if args.gpus > 1:
         plan["multi_gpu_note"] = ("for multi-GPU use `uv run accelerate launch --num_processes="
@@ -483,7 +496,7 @@ def main() -> None:
             else:
                 rename_flag = f"--rename_map='{json.dumps(fc['rename_map'])}'"
                 cmd = cmd + " \\\n  " + rename_flag
-                plan["launch_command"] = cmd
+                plan["train_command"] = cmd
                 plan["camera_rename_map"] = fc["rename_map"]
                 plan["camera_padded"] = fc.get("padded_cameras")
                 print(f"\n⚠ camera mismatch (dataset {fc['provided']} vs checkpoint {fc['expected']}) "

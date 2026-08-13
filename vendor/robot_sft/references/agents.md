@@ -116,7 +116,7 @@ learning, not generalization.
    and may emit a `batch_suggestion` (lessons_learned #16) — apply, re-run preflight,
    recompute the plan. Record the verdict in the plan notes.
 
-**Output `training_plan.json`:** plan_training.py's `--json` output (launch_command,
+**Output `training_plan.json`:** plan_training.py's `--json` output (train_command,
 resume_command, output_dir, dataset_repo_id/root, train/eval_episodes, batch_size, steps,
 save_freq, num_workers, repo, cuda_visible_devices, ...) + `{shm_ok:bool, notes:[]}`.
 
@@ -158,7 +158,7 @@ save_freq, num_workers, repo, cuda_visible_devices, ...) + `{shm_ok:bool, notes:
 load training_plan + run.json
 restarts = 0
 launch training subprocess → tee to train.log
-  (first launch uses launch_command; if a resumable checkpoint already exists, resume_command)
+  (first launch uses train_command; if a resumable checkpoint already exists, resume_command)
 loop every POLL seconds (POLL ≤ 300):
     parse train.log tail → last_step (tqdm N/M), last_loss ("loss:x"), last_ckpt
     write run.json {status:"running", last_step, last_loss, restarts, assessment, ts}
