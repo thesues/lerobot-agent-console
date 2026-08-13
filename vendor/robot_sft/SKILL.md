@@ -611,28 +611,6 @@ match · dataset at the same path · **model cache + `HF_TOKEN`** · GPU count �
 report each failure. The other subcommands: `status` (see the polling rule below), `clean` (before
 any retry), `launch` (start workers with correct redirects + recorded PIDs).
 
-**Resuming a MULTI-NODE run is not the same problem as resuming a single-node one.** lerobot
-writes the checkpoint from rank 0 only (`if is_main_process: save_checkpoint(...)`) but reads it
-from **every** rank on the way back in (`load_training_num_processes(cfg.checkpoint_path)`, and
-each rank builds the policy from `--config_path`). A worker whose `output_dir` was never written
-to therefore dies the instant it starts, while the master looks perfectly healthy — the failure
-surfaces on the node that did nothing wrong. Before any multi-node resume:
-
-```bash
-python .../multinode.py resume --worker <addr> --output-dir <the ORIGINAL run's output_dir>
-```
-It resolves `checkpoints/last` (a relative symlink), verifies the checkpoint is complete (a
-mid-write one fails later, on every rank), rsyncs **only that one step dir** to every worker
-(~9 GB for pi05 — the whole `checkpoints/` tree would be several times that), recreates `last`
-there, and prints the exact `--resume=true --config_path=…` to append. Then gate it with
-`multinode.py check --resume …`, which INVERTS the output_dir rule: on a resume the directory
-must exist, with a checkpoint, on every node.
-
-⚠️ If the run died **before** the first `save_freq` step there is no checkpoint at all — resume
-is impossible. Delete `output_dir` on every node (`clean --remove-output-dir`) and start over. A
-leftover `output_dir` with no checkpoint is precisely what raises
-`FileExistsError: Output directory … already exists and resume is False`.
-
 Why these specific gates — each one is a failure we hit and misdiagnosed:
 - **Every rank builds the policy itself**, so the pretrained backbone must be cached on EVERY node
   and gated repos need `HF_TOKEN` there. A worker without them 403s seconds after launch. ⚠️ A
@@ -845,24 +823,28 @@ step the master legitimately waits in the rendezvous for the workers — the wat
 - **Only the master (rank 0) writes checkpoints** to `output_dir/checkpoints/` — accelerate saves and
   logs only on the main process. Workers write nothing.
 - **The watchdog never auto-relaunches a multi-node run.** On crash/stall it sets the run
-  `blocked` with the manual procedure (it can't scp to or restart workers, and the single-node
-  resume_command would silently restart with the WRONG world size). A multi-node resume is always
-  manual:
+  `blocked` with the manual procedure (it can't restart workers, and the single-node
+  resume_command would silently restart with the WRONG world size). A multi-node resume is driven
+  by hand, but not improvised — one command puts the checkpoint everywhere it is needed:
   ```bash
-  # 1. on master, copy the step dir being resumed (both pretrained_model/ and training_state/):
-  # prefer rsync (pre-installed): resumable, delta-only, --partial survives a dropped link,
-  # -P shows progress on multi-GB checkpoints. Address the worker exactly as the user gave it.
-  rsync -aP --partial <output_dir>/checkpoints/<STEP> root@<worker-addr>:<output_dir>/checkpoints/
-  # scp works too (same keys):  scp -r <output_dir>/checkpoints/<STEP> root@<worker-addr>:…
-  # non-console nodes: no shared keys — the user runs the copy themselves.
-  # 2. relaunch EVERY node with the SAME accelerate prefix + resume flags (only --machine_rank differs):
-  ...accelerate launch … $(which lerobot-train) --resume=true \
-     --config_path=<output_dir>/checkpoints/last/pretrained_model/train_config.json
-  # 3. rerun the watchdog on the master (it uses multi_node.master_resume_command)
+  python .../multinode.py resume --worker <addr> --output-dir <the ORIGINAL run's output_dir>
+  python .../multinode.py check  --resume --master <addr> --worker <addr> --output-dir <same>
   ```
-  Every rank loads the checkpoint from its **own local** `output_dir`, so without the scp the workers
-  can't initialize. The plan's bare `resume_command` is single-node — **never use it for a
-  multi-node run**; the watchdog refuses to resume without `multi_node.master_resume_command`.
+  `resume` resolves `checkpoints/last` (a relative symlink), refuses a half-written checkpoint,
+  rsyncs **only that step dir** to every worker (~9 GB for pi05; the whole `checkpoints/` tree
+  would be several times that), recreates `last` there, re-verifies, and prints the exact
+  `--resume=true --config_path=…` to append. `check --resume` then INVERTS the output_dir gate:
+  on a resume the directory must exist, with a checkpoint, on every node.
+  Why the copy is needed at all: every rank loads the checkpoint from its **own local**
+  `output_dir`, but only rank 0 ever wrote one — so an un-synced worker dies instantly while the
+  master looks healthy. Relaunch every node with the same accelerate prefix (only
+  `--machine_rank` differs), then rerun the watchdog on the master (it uses
+  `multi_node.master_resume_command`). The plan's bare `resume_command` is single-node —
+  **never use it for a multi-node run**.
+  ⚠️ If the run died **before** the first `save_freq` step there is no checkpoint at all: resume
+  is impossible. Delete `output_dir` on every node (`clean --remove-output-dir`) and start over.
+  A leftover `output_dir` with no checkpoint is exactly what raises
+  `FileExistsError: Output directory … already exists and resume is False`.
 
 **Eval runs ONLY on the master node** — checkpoints exist only there. Start `eval_watcher.py` /
 `offline_eval.py` on the master (spare GPU on master → concurrent; else `post_training` on master after

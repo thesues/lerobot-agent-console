@@ -373,8 +373,21 @@ def cmd_status(a) -> int:
             continue
         last = [ln for ln in text.splitlines() if ln.strip()][-1][:160]
         print(f"[{label}] {classify(text)}\n          last: {last}")
+    # The watchdog is the one instruction in this whole workflow that was only ever DESCRIBED —
+    # SKILL.md says "master under the watchdog" 31 times and `launch` printed a reminder, but
+    # nothing ever failed when it was skipped. Everything the agent reliably does here is
+    # enforced by an exit code, so this became one too: an unsupervised master means no stall
+    # detection and no auto-resume, and you find out hours later.
+    rc, out = run_local("pgrep -fa 'watchdog.py' | head -1 || true")
+    supervised = bool(out.strip())
+    if supervised:
+        print(f"[master] watchdog: supervising ({out.strip().splitlines()[-1][:100]})")
+    else:
+        print("[master] watchdog: ABSENT — this run has no stall detection and no auto-resume.\n"
+              "         Start it (session.py add-run + watchdog.py + monitor_server.py) or say\n"
+              "         explicitly that this run is deliberately unsupervised.")
     print("\n(poll this every ~20-30s and relay it; multi-node startup is minutes of silence)")
-    return 0
+    return 0 if supervised or a.allow_unsupervised else 2
 
 
 # --------------------------------------------------------------------------- clean
@@ -445,9 +458,19 @@ def cmd_launch(a) -> int:
         except OSError as e:
             print(f"(could not record PIDs: {e})")
 
-    print("\nNow start the MASTER under the watchdog (rank 0), e.g.:\n"
-          f"  {a.command}\n"
-          "Then poll:  python multinode.py status --worker <addr> ...")
+    # NOT "e.g." — the master must be started under the watchdog, because the watchdog OWNS the
+    # training subprocess (starting it afterwards would launch a SECOND master and collide on the
+    # rendezvous port). Workers are up and waiting in the rendezvous from this moment, so this is
+    # the step that must not be improvised.
+    print("\n=== next: start the MASTER (rank 0) UNDER THE WATCHDOG ===")
+    print("  The watchdog launches the process itself — do not start training first and attach\n"
+          "  the watchdog after; that starts a second master and collides on the rendezvous port.")
+    print(f"    1. session.py add-run   (record the run + its multi_node.master_launch_command)\n"
+          f"    2. watchdog.py --run <run_id>   -> it runs:\n"
+          f"         {a.command}\n"
+          f"    3. monitor_server.py    (dashboard)")
+    print("  Then poll:  python multinode.py status --worker <addr> ...\n"
+          "  `status` FAILS (exit 2) while no watchdog is running — that is deliberate.")
     return 0
 
 
@@ -700,6 +723,8 @@ def main() -> int:
     c.add_argument("--port", type=int, default=29500)
 
     s = sub.add_parser("status", help="one-line phase per node (read-only)")
+    s.add_argument("--allow-unsupervised", action="store_true",
+                   help="exit 0 even with no watchdog (only when the user chose that on purpose)")
     common(s)
     s.add_argument("--master-log", required=True)
     s.add_argument("--worker-log", required=True)
