@@ -6,7 +6,7 @@ for **lerobot / `lerobot-train`**). Each entry: the failure, why it happens, and
 preflight checks in stages d/e.
 
 Environment note (console pod): the lerobot checkout is **/lerobot** (run everything from
-there with `uv run`); all big artifacts — checkpoints, session state, HF caches — belong on
+there with plain `python`, never `uv run`); all big artifacts — checkpoints, session state, HF caches — belong on
 the roomy **/opt/data** volume, never in the repo.
 
 ## 1. Gated / unauthorized Hub model or dataset
@@ -182,11 +182,14 @@ scheduler_state.json,training_step.json}}` plus a `checkpoints/last` symlink.
 `training_state/{optimizer_state.safetensors,training_step.json,rng_state*}`. Confirm against
 a real checkpoint produced by *this* lerobot version if in doubt (preflight saves one).
 
-## 19. `offline_eval.py` / `eval_watcher.py` fail on `tos://` dataset URLs
-**Symptom:** eval watcher logs `HFValidationError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': 'tos://…'` for every checkpoint, and `eval_results.jsonl` has `mean_mse=None` everywhere. The eval curve is silently empty.
-**Why:** `offline_eval.py` passes `--dataset-repo-id` to lerobot's `get_repo_versions()` / Hub API, which validates the repo_id as a HuggingFace Hub repo and rejects `tos://` / `s3://` URLs. The eval_watcher wraps offline_eval, so it inherits this gap.
-**Check (stage e):** after the first checkpoint is saved (usually a few minutes in), poll the eval watcher log (`eval/eval_watcher.log`). If you see `HFValidationError`, the auto-eval curve won't populate — switch to manual eval (see #20) for that run.
-**Fix:** patch `offline_eval.py` to recognize `tos://` (and `s3://`) dataset refs and use `StreamingTOSRobotDataset` instead of `LeRobotDataset` / Hub API calls. Until fixed, run manual eval per #20.
+## 19. `tos://` eval sets — FIXED, do not work around it
+**History:** `offline_eval.py` used to pass `--dataset-repo-id` straight to lerobot's Hub API,
+which rejected `tos://` with `HFValidationError`, so `eval_results.jsonl` filled with
+`mean_mse=None`. That is fixed: `offline_eval.py` branches on `tos://` / `s3://` / `gs://` into
+`StreamingTOSRobotDataset`, and `eval_watcher.py` inherits the fix.
+**Why this entry still exists:** the "not supported, download the dataset or skip eval" advice
+outlived the fix in three other places and was still being followed. If you see it again
+anywhere, it is stale — check `offline_eval.py` before believing it.
 
 ## 20. Manual held-out eval on a TOS dataset (when offline_eval fails)
 When #19 blocks the eval watcher, run held-out eval manually. You need three things the eval_watcher normally does for you:

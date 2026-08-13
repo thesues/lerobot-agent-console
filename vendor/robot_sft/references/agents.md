@@ -6,7 +6,7 @@ stage, validates, writes, marks the stage `done`, returns a 2–3 line summary. 
 orchestrator (main loop in SKILL.md) decides what runs next.
 
 Environment (console pod): the lerobot checkout is **/lerobot** — run all lerobot commands
-from there (`cd /lerobot && uv run ...`). All big artifacts (session state, checkpoints,
+from there (`cd /lerobot && python ...`; never `uv run`). All big artifacts (session state, checkpoints,
 HF caches) live on **/opt/data** (the roomy persistent volume); `session.py` and
 `plan_training.py` default there already.
 
@@ -147,7 +147,7 @@ save_freq, num_workers, repo, cuda_visible_devices, ...) + `{shm_ok:bool, notes:
 7. **Pick the best checkpoint from the eval curve.** By the end, `eval_watcher` has scored
    every checkpoint, so `eval/eval_results.jsonl` holds the held-out MSE/MAE curve — pick
    the lowest mean MSE (also on the dashboard). To (re)score one checkpoint manually:
-   `cd /lerobot && uv run python <skill>/scripts/offline_eval.py
+   `cd /lerobot && python <skill>/scripts/offline_eval.py
    --model-path <output_dir>/checkpoints/<N>/pretrained_model
    --dataset-repo-id <id> [--dataset-root <dir>] --episodes <held-out ids>`.
    Held-out ⇒ real generalization signal; still ≠ closed-loop success (lessons #11).

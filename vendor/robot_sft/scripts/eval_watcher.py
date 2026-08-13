@@ -76,7 +76,9 @@ def eval_one(repo, ckpt_dir, plan, gpu, eval_dir, env, plot_dest, timeout,
     """Run offline_eval.py for one checkpoint; return (mean_mse, mean_mae, [plot files])."""
     eval_eps = plan.get("eval_episodes") or []
     model_path = os.path.join(ckpt_dir, "pretrained_model")
-    cmd = ["uv", "run", "python", os.path.join(SKILL_SCRIPTS, "offline_eval.py"),
+    # `python`, not `uv run python`: uv run triggers multi-process issues here (see SKILL.md
+    # Environment). This was the last place in the skill's own code still invoking it.
+    cmd = ["python", os.path.join(SKILL_SCRIPTS, "offline_eval.py"),
            "--model-path", model_path,
            "--dataset-repo-id", plan["dataset_repo_id"],
            "--episodes", *[str(i) for i in eval_eps],
@@ -85,11 +87,14 @@ def eval_one(repo, ckpt_dir, plan, gpu, eval_dir, env, plot_dest, timeout,
            "--plot-dir", plot_dest]
     if plan.get("dataset_root"):
         cmd += ["--dataset-root", plan["dataset_root"]]
-    # Own session so we can kill the WHOLE tree on timeout — a hung eval must never
-    # block the pipeline. Run through `bash -lc` sourcing ~/.bashrc so offline_eval inherits
-    # HF_ENDPOINT + TOS_ACCESS_KEY/SECRET_KEY (needed to stream a tos:// eval set) even if this
-    # watcher wasn't started from an interactive shell — same reason the watchdog does it.
-    inner = "[ -f ~/.bashrc ] && . ~/.bashrc; " + " ".join(shlex.quote(c) for c in cmd)
+    # Own session so we can kill the WHOLE tree on timeout — a hung eval must never block the
+    # pipeline. `bash -lc` (a LOGIN shell) so offline_eval inherits HF_ENDPOINT +
+    # TOS_ACCESS_KEY/SECRET_KEY — needed to stream a tos:// eval set — even when this watcher was
+    # not started from an interactive shell. It no longer sources ~/.bashrc by hand: credentials
+    # live in /etc/console-shell-init.sh (installed by `multinode.py env set`), which a login
+    # shell picks up through /etc/profile.d. Sourcing an rc file is the pattern this skill spends
+    # a section outlawing, and it read whichever HOME this process happened to have.
+    inner = " ".join(shlex.quote(c) for c in cmd)
     p = subprocess.Popen(["bash", "-lc", inner], cwd=repo, env=env, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, text=True, start_new_session=True)
     try:

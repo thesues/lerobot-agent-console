@@ -44,7 +44,7 @@ Key facts:
 Resume is **explicit**, not automatic:
 
 ```bash
-cd /lerobot && uv run lerobot-train \
+cd /lerobot && python -u -m lerobot.scripts.lerobot_train \
   --resume=true \
   --config_path=<output_dir>/checkpoints/last/pretrained_model/train_config.json
 ```

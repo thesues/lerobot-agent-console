@@ -250,11 +250,12 @@ def launch(cmd: str, log_path: str) -> subprocess.Popen:
     logf = open(log_path, "ab", buffering=0)
     logf.write(f"\n===== watchdog launch @ {time.ctime()} =====\n{cmd}\n".encode())
     # `bash -lc` is a LOGIN shell: it sources /etc/profile[.d] (which activates the lerobot
-    # venv) but NOT ~/.bashrc — where the pod exports HF_ENDPOINT + TOS_ACCESS_KEY/SECRET_KEY
-    # (needed for tos:// streaming). Source it explicitly so the training subprocess ALWAYS
-    # has those, independent of how the watchdog itself was started (a bare `python
-    # watchdog.py` wouldn't have inherited them). Guarded so it's harmless if ~/.bashrc is absent.
-    wrapped = f"[ -f ~/.bashrc ] && . ~/.bashrc; {cmd}"
+    # venv) AND the credentials installed by `multinode.py env set`, which reach a login shell
+    # through /etc/profile.d — so the training subprocess always has HF_ENDPOINT +
+    # TOS_ACCESS_KEY/SECRET_KEY (needed for tos:// streaming) however the watchdog was started.
+    # It used to source ~/.bashrc by hand; that read whichever HOME this process happened to
+    # inherit (/root over ssh, /opt/data in the console) and is the pattern SKILL.md outlaws.
+    wrapped = cmd
     return subprocess.Popen(["bash", "-lc", wrapped], stdout=logf, stderr=subprocess.STDOUT,
                             start_new_session=True)
 
