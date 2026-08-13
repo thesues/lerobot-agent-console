@@ -475,6 +475,12 @@ the one that reports the error is usually not the one that is wrong.
 - `scripts/offline_eval.py` — open-loop replay of a checkpoint on held-out episodes
   (per-episode + mean MSE/MAE, optional gt-vs-pred plots). The lerobot answer to "no sim
   env": run it from `/lerobot` with plain `python`.
+  **If the run trained with a camera rename, eval needs the same map** — pass
+  `--rename-map '<the plan's camera_rename_map as JSON>'`, or the checkpoint's expected keys
+  (`observation.images.base_0_rgb` …) will not match the dataset's (`observation.images.front`
+  …) and make_policy dies with "Feature mismatch". `eval_watcher.py` passes it automatically.
+  Runs HF-offline by default — by eval time everything is cached, and reaching the Hub from this
+  pod only times out (measured 8m35s vs 2m0s). `--online` opts back in.
 - `scripts/eval_watcher.py` — periodic offline eval: scores each new checkpoint on the
   held-out episodes (separate GPU when available), saving metrics to
   `eval/eval_results.jsonl` and plots under `eval/artifacts/ckpt-N/<group>/`.
