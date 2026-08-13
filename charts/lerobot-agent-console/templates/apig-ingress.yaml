@@ -1,41 +1,87 @@
 {{- if .Values.apig.enabled }}
-{{/* Public entry point. This is ONLY the routing rule — the APIGInstance CRD that provisions
-     the gateway and owns its *.volceapi.com domain stays out of Helm on purpose (k8s/), because
-     a stray `helm uninstall` would take the gateway and the domain with it.
+{{- $name  := include "console.name" . -}}
+{{- $class := default (printf "%s-apig" $name) .Values.apig.ingressClassName -}}
+{{- $inst  := default (printf "%s-apig" $name) .Values.apig.instanceName -}}
+{{- if and .Values.apig.create (not .Values.apig.subnetIds) }}
+{{- fail "apig.create is true but apig.subnetIds is empty — a new gateway needs subnets in this cluster's VPC. Either list them, or set apig.create=false and point apig.existingId at a gateway that already exists." }}
+{{- end }}
+{{- if and (not .Values.apig.create) (not .Values.apig.existingId) }}
+{{- fail "apig.create is false but apig.existingId is empty — set it to the gateway's instance id (APIG console), or set apig.create=true to provision a new one." }}
+{{- end }}
+{{/* The gateway itself.
 
-     It belongs in the chart precisely because it names the backend Service: when the consoles
-     were renamed, this file had to be hand-edited to match, which is the drift a chart exists
-     to prevent. Templating the backend off the same helper as the Service makes that
-     impossible. */}}
+     create=false ADOPTS one that already exists (spec.id); create=true PROVISIONS a new one
+     (spec.name + spec.common). Both are the same CRD — this is its own documented split.
+
+     ⚠️ A provisioned gateway belongs to this release: `helm uninstall` deletes it, and its
+     auto-assigned *.volceapi.com domain does not come back. Anything with a bookmarked URL
+     should adopt instead. (This resource used to live outside Helm entirely for that reason;
+     it is in the chart now because the console's Helm page is the only install path, and
+     "create the gateway first" is not something you can do from there. The risk is real, so
+     it is called out in values.yaml too.) */}}
+apiVersion: loadbalancer.vke.volcengine.com/v1beta1
+kind: APIGInstance
+metadata:
+  name: {{ $inst }}
+  labels:
+    app: {{ $name }}-apig
+spec:
+  {{- if .Values.apig.create }}
+  name: {{ $inst }}
+  common:
+    network:
+      subnetIds: {{- toYaml .Values.apig.subnetIds | nindent 8 }}
+    resource:
+      replicas: {{ .Values.apig.replicas }}
+      instanceSpecCode: {{ .Values.apig.instanceSpecCode | quote }}
+      clbSpecCode: {{ .Values.apig.clbSpecCode | quote }}
+      publicNetworkBillingType: {{ .Values.apig.publicNetworkBillingType | quote }}
+  {{- else }}
+  id: {{ .Values.apig.existingId | quote }}
+  {{- end }}
+  ingress:
+    enable: true
+    enableAllIngressClasses: false
+    enableAllNamespaces: false
+    enableIngressWithoutIngressClass: false
+    ingressClasses:
+      - {{ $class }}
+    watchNamespaces:
+      - {{ .Release.Namespace }}
+---
+{{/* The routing rule. Templated off the same helper as the Service so a rename can never leave
+     the Ingress pointing at a backend that no longer exists — the drift a chart exists to
+     prevent. */}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ .Values.apig.ingressName }}
+  name: {{ default (printf "%s-apig" $name) .Values.apig.ingressName }}
   labels:
-    app: {{ include "console.name" . }}-apig
-  {{- with .Values.apig.annotations }}
-  {{/* ⚠️ Helm DEEP-MERGES maps across values files: setting `annotations: {}` in
-       values-test.yaml does NOT clear the parent's entries, it keeps them. That silently gave
-       the test Ingress dev's apig-instance-name and loadbalancer-id, pointing it at the wrong
-       gateway — its public IP stopped answering entirely (000, not even a 5xx). An explicit
-       boolean is the only reliable way to mean "none here". */}}
-  annotations: {{- toYaml . | nindent 4 }}
-  {{- end }}
+    app: {{ $name }}-apig
+  annotations:
+    {{/* Bind the gateway EXPLICITLY. An ingressClassName alone is a weak claim — another
+         Ingress declaring the same class can take the instance. */}}
+    ingress.vke.volcengine.com/apig-instance-name: {{ $inst }}
+    {{- if .Values.apig.existingId }}
+    ingress.vke.volcengine.com/loadbalancer-id: {{ .Values.apig.existingId | quote }}
+    {{- end }}
+    {{- with .Values.apig.annotations }}
+    {{/* ⚠️ Helm DEEP-MERGES maps across values files: `annotations: {}` in an override does NOT
+         clear the parent's entries. That silently gave the test console dev's gateway, and its
+         public IP stopped answering entirely (000, not even a 5xx). */}}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
-  {{/* Each console sits behind its OWN APIG instance, so this is per-environment: `apig` for
-       dev, `apig-test` for test. Pointing both at one class would route them to one gateway. */}}
-  ingressClassName: {{ .Values.apig.ingressClassName }}
+  ingressClassName: {{ $class }}
   rules:
-    {{/* A distinct host per environment is what gets each its own managed volceapi.com
-         domain. ⚠️ Do NOT add the auto-assigned *.volceapi.com name as a host here — doing
-         that once broke the 443 listener outright (503 -> 000). */}}
-    - host: {{ .Values.apig.host }}
+    - host: {{ default (printf "%s.apig.local" $name) .Values.apig.host }}
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: {{ include "console.name" . }}   {{/* the headless Service, :8080 */}}
-                port: { number: 8080 }
+                name: {{ $name }}
+                port:
+                  number: {{ include "console.port" . }}
 {{- end }}

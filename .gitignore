@@ -17,3 +17,8 @@ k8s/secret.yaml
 
 # k8s deployment manifests: kept locally, not tracked (infra details stay private)
 k8s/
+
+# Generated at deploy time from values.yaml, and carries the console password. Never committed:
+# the chart is installed from the VKE console's Helm page, so the credentials live in whatever
+# values.yaml is pasted there — this file is just the local equivalent for `helm upgrade`.
+charts/**/values-activate.yaml

@@ -1,9 +1,15 @@
 {{/* Self-hosted LiveKit SFU. The Mac daemon (home robot) and the in-pod controller both DIAL
      OUT to it, which sidesteps home/cloud symmetric NAT — only the CLB needs inbound. */}}
 {{- $name := default .Release.Name .Values.nameOverride -}}
-{{- if not .Values.nodeIp }}
-{{- fail "livekit: nodeIp is required — set it to the CLB's PUBLIC IP (kubectl get svc <name>-clb -o jsonpath='{.status.loadBalancer.ingress[0].ip}'). Without it ICE hands clients an unroutable address and media never connects." }}
-{{- end }}
+{{/* nodeIp is what ICE hands clients as the reachable address; get it wrong and media never
+     connects even though signalling looks fine. It is the CLB's PUBLIC IP — and this chart
+     creates that CLB, so demanding the IP as an input was circular: you cannot know it until
+     after the first install, and the install path (the VKE console's Helm page) has no shell in
+     which to look it up and re-run.
+
+     So: leave nodeIp empty and an init container waits for the CLB to be assigned an IP and
+     hands it over. Set it explicitly to skip that entirely — worth doing once the IP is known,
+     since it removes the RBAC and the wait. */}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -32,11 +38,52 @@ spec:
     metadata:
       labels: { app: {{ $name }} }
     spec:
+      {{- if not .Values.nodeIp }}
+      serviceAccountName: {{ $name }}-ip
+      initContainers:
+        {{/* Same image as the server on purpose: it already has sh + wget, and pulling a second
+             image (kubectl, curl) is a slow, failure-prone extra dependency from CN. It talks to
+             the API server with the pod's own token; the Role grants nothing but `get` on this
+             one Service. */}}
+        - name: wait-clb-ip
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              API=https://kubernetes.default.svc
+              SA=/var/run/secrets/kubernetes.io/serviceaccount
+              for i in $(seq 1 120); do
+                IP=$(wget -qO- --ca-certificate=$SA/ca.crt \
+                      --header="Authorization: Bearer $(cat $SA/token)" \
+                      "$API/api/v1/namespaces/$(cat $SA/namespace)/services/{{ $name }}-clb" \
+                      | tr ',' '\n' | grep -o '"ip":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+                if [ -n "${IP:-}" ]; then
+                  echo "$IP" > /shared/node_ip
+                  echo "[wait-clb-ip] CLB public IP = $IP"
+                  exit 0
+                fi
+                echo "[wait-clb-ip] CLB has no external IP yet ($i/120), waiting…"
+                sleep 5
+              done
+              echo "[wait-clb-ip] the CLB never got an external IP. Check the Service's events —" >&2
+              echo "  a subnetId outside this cluster's VPC is the usual cause." >&2
+              exit 1
+          volumeMounts:
+            - { name: shared, mountPath: /shared }
+      {{- end }}
       containers:
         - name: livekit
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.nodeIp }}
           args: ["--config", "/etc/livekit/config.yaml", "--node-ip", {{ .Values.nodeIp | quote }}]
+          {{- else }}
+          {{/* `exec` so the server stays PID 1 and still receives SIGTERM on shutdown. */}}
+          command: ["sh", "-c"]
+          args: ["exec /livekit-server --config /etc/livekit/config.yaml --node-ip \"$(cat /shared/node_ip)\""]
+          {{- end }}
           env:
             {{/* NOT optional: a missing Secret must hold the pod in
                  CreateContainerConfigError rather than start a public SFU with no credentials. */}}
@@ -50,9 +97,16 @@ spec:
           resources: {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - { name: config, mountPath: /etc/livekit }
+            {{- if not .Values.nodeIp }}
+            - { name: shared, mountPath: /shared }
+            {{- end }}
       volumes:
         - name: config
           configMap: { name: {{ $name }}-config }
+        {{- if not .Values.nodeIp }}
+        - name: shared
+          emptyDir: {}
+        {{- end }}
 ---
 {{/* Owns a CLB with a dedicated public IP. Separate from the console, which is on APIG. */}}
 apiVersion: v1

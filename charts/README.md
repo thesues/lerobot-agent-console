@@ -1,3 +1,42 @@
+## Installing
+
+The real install path is the **VKE console → 创建 Helm 应用** page: pick the chart, edit
+`values.yaml` in the text box, name the release, deploy. There is no shell in that flow, which is
+why this chart creates everything it needs — nothing here says "run `kubectl create secret`
+first", because on that page you cannot.
+
+`values.yaml` therefore ships **installable-anywhere defaults**, not our deployment:
+- `auth.password` is empty and the install FAILS with a message until you set it. This console
+  hands out a root shell on a GPU node; it must not come up reachable without credentials.
+- `nodeSelector: {}` — the GPU request schedules the pod. A hostname from our cluster would
+  leave it Pending forever on yours.
+- `apig.enabled: false` — the console works in-cluster without it. Turn it on when you know which
+  gateway to use: `create: false` + `existingId` adopts one from the APIG console, `create: true`
+  + `subnetIds` provisions a new one. ⚠️ A provisioned gateway is deleted by `helm uninstall`,
+  taking its `*.volceapi.com` domain with it.
+- `livekit.nodeIp` may be left empty: an init container waits for the chart's own CLB to be
+  assigned a public IP and hands it to the server. Set it explicitly once the IP is known and the
+  init container plus its RBAC disappear.
+
+Cluster-specific values you will have to change regardless: `persistence.storageClass`,
+`livekit.service.subnetId`, and `image.repository` if you mirror the image.
+
+### Deploying with the CLI instead
+
+There are no per-environment values files in this repo on purpose — an environment's file wants
+to hold its password, and that is not a thing to commit. Generate one at deploy time:
+
+```bash
+cat charts/lerobot-agent-console/values.yaml > /tmp/values-activate.yaml   # start from the defaults
+# then append the environment's overrides + credentials, e.g. auth.user/auth.password, apig.*
+helm upgrade --install <release> charts/lerobot-agent-console \
+  -f /tmp/values-activate.yaml --reset-values
+```
+
+`values-activate.yaml` is gitignored anywhere under `charts/`. Always pass `--reset-values`:
+without it `helm upgrade` reuses the previous release's values, and a stale `image.tag` override
+silently outranks the one in the chart.
+
 # Helm charts
 
 Replaces the hand-maintained manifests in `k8s/`. Those were gitignored, so they only ever

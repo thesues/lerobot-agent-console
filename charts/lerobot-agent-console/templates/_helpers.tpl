@@ -11,3 +11,9 @@
 {{- define "console.selectorLabels" -}}
 app: {{ include "console.name" . }}
 {{- end -}}
+
+{{/* The console's HTTP port. Defined once: the Service publishes it and the APIG Ingress routes
+     to it, and those two silently disagreeing is a 503 with nothing in the logs. */}}
+{{- define "console.port" -}}
+{{- default 8080 .Values.port -}}
+{{- end -}}

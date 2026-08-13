@@ -44,10 +44,10 @@ spec:
                  NOT created here — charts should not carry credentials. */}}
             - name: CONSOLE_USER
               valueFrom:
-                secretKeyRef: { name: {{ .Values.auth.secretName }}, key: user }
+                secretKeyRef: { name: {{ include "console.name" . }}-auth, key: user }
             - name: CONSOLE_PASSWORD
               valueFrom:
-                secretKeyRef: { name: {{ .Values.auth.secretName }}, key: password }
+                secretKeyRef: { name: {{ include "console.name" . }}-auth, key: password }
           resources: {{- toYaml .Values.resources | nindent 12 }}
           readinessProbe:
             httpGet: { path: /healthz, port: 8080, scheme: HTTP }

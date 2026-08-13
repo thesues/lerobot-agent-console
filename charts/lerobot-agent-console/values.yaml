@@ -15,8 +15,10 @@ image:
 
 # Both consoles are pinned to the H20 box. ebs-* volumes are ZONAL, so a PVC bound in another
 # zone can never attach here — moving nodes means recreating the PVC empty.
-nodeSelector:
-  kubernetes.io/hostname: "192.168.1.2"
+# Empty on purpose. The GPU request below is what schedules this pod, so pinning a node is never
+# required — and a hostname from one cluster leaves the pod Pending forever on any other. Fill it
+# only to force a specific machine: nodeSelector: { kubernetes.io/hostname: "192.168.1.2" }
+nodeSelector: {}
 
 resources:
   requests: { cpu: "16", memory: 128Gi, nvidia.com/gpu: "1" }
@@ -41,8 +43,16 @@ persistence:
 # "out of shared memory") and the container cannot remount it without CAP_SYS_ADMIN.
 dshmSize: 32Gi
 
+# Console login (HTTP basic auth). Set the password before deploying — it is the only thing
+# between a public endpoint and a root shell on a GPU box; the chart refuses to install without it.
+#
+# Plain values, not a pre-made Secret: this chart is installed from the VKE console's
+# "创建 Helm 应用" page, where values.yaml is the only input and there is no shell in which to run
+# `kubectl create secret` first. A chart that requires one cannot be installed that way at all.
+# The chart renders these into a Secret it owns, so they are not left sitting in the pod spec.
 auth:
-  secretName: lerobot-console-auth   # keys: user, password. NOT created by this chart.
+  user: admin
+  password: ""
 
 env:
   # An ORDERED LIST, not a map: Helm's `range` sorts map keys, and reordering container env
@@ -61,15 +71,35 @@ env:
 # Public entry point. ONLY the Ingress (routing) is templated — the APIGInstance CRD that
 # provisions the gateway and owns its *.volceapi.com domain stays in k8s/, because a stray
 # `helm uninstall` would delete the gateway and take the domain with it.
+# Public HTTPS entry point through Volcengine APIG. OFF by default so a first install succeeds
+# on any cluster; the console is reachable in-cluster either way. Turn it on once you know which
+# gateway it should use.
 apig:
-  enabled: true
-  ingressName: console-dev-apig
-  # Each console sits behind its OWN APIG instance, so the class is per-environment.
-  ingressClassName: apig
+  enabled: false
+
+  # Two ways to get a gateway, matching the APIGInstance CRD's own two modes:
+  #   create: false -> ADOPT an existing gateway (CRD sets spec.id). Put its instance id, from
+  #                    the APIG console, in existingId.
+  #   create: true  -> PROVISION a new one (CRD sets spec.name + spec.common). subnetIds is then
+  #                    REQUIRED and must be in this cluster's VPC. Takes a few minutes, and bills.
+  # ⚠️ A gateway this chart provisioned is DELETED by `helm uninstall`, taking its auto-assigned
+  #    *.volceapi.com domain with it — a new one comes back under a different name. Adopt an
+  #    existing gateway for anything whose URL people have bookmarked.
+  create: false
+  existingId: ""                  # create=false: the gateway's instance id
+  instanceName: ""                # create=true: gateway name (default: <release>-apig)
+  subnetIds: []                   # create=true: REQUIRED
+  replicas: 2
+  instanceSpecCode: 1c2g
+  clbSpecCode: small_1
+  publicNetworkBillingType: traffic
+
+  ingressName: ""                 # default: <release>-apig
+  # One gateway per ingress class: pointing two consoles at the same class routes them to one
+  # gateway. Default is <release>-apig, which is unique as long as release names are.
+  ingressClassName: ""
   # A distinct host per environment is what earns each its own managed domain.
   # ⚠️ Never put the auto-assigned *.volceapi.com name here — doing that once killed the
   # 443 listener outright (503 -> 000).
-  host: console-dev.apig.test
-  annotations:
-    ingress.vke.volcengine.com/apig-instance-name: gd9khpnlb1nffgnhcadcg-apig-instance
-    ingress.vke.volcengine.com/loadbalancer-id: gd9khpnlb1nffgnhcadcg
+  host: ""                        # default: <release>.apig.local
+  annotations: {}                 # binding annotations are added automatically from existingId
