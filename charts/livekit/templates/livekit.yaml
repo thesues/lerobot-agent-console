@@ -55,14 +55,27 @@ spec:
               API=https://kubernetes.default.svc
               SA=/var/run/secrets/kubernetes.io/serviceaccount
               for i in $(seq 1 120); do
-                IP=$(wget -qO- --ca-certificate=$SA/ca.crt \
-                      --header="Authorization: Bearer $(cat $SA/token)" \
+                {{/* BusyBox wget, not GNU: `--header STR` takes a SPACE not `=`, there is no
+                     --ca-certificate, and an unknown option makes it print its usage and exit —
+                     which is what the first version did on every poll for ten minutes while the
+                     loop counted up as though it were merely waiting. --no-check-certificate is
+                     the only TLS option it has; the request goes to kubernetes.default.svc
+                     inside the cluster and still carries the bearer token, so the API server
+                     authenticates it either way. */}}
+                IP=$(wget -q -O - --no-check-certificate \
+                      --header "Authorization: Bearer $(cat $SA/token)" \
                       "$API/api/v1/namespaces/$(cat $SA/namespace)/services/{{ $name }}-clb" \
                       | tr ',' '\n' | grep -o '"ip":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
                 if [ -n "${IP:-}" ]; then
                   echo "$IP" > /shared/node_ip
                   echo "[wait-clb-ip] CLB public IP = $IP"
                   exit 0
+                fi
+                if [ "$i" = "3" ] && ! wget -q -O /dev/null --no-check-certificate \
+                     --header "Authorization: Bearer $(cat $SA/token)" \
+                     "$API/api/v1/namespaces/$(cat $SA/namespace)/services/{{ $name }}-clb"; then
+                  echo "[wait-clb-ip] WARNING: cannot reach the API server for that Service —" >&2
+                  echo "  what follows is not a wait. Check the ServiceAccount and Role." >&2
                 fi
                 echo "[wait-clb-ip] CLB has no external IP yet ($i/120), waiting…"
                 sleep 5
