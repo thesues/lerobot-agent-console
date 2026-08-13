@@ -22,7 +22,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+
+# MUST happen before anything imports huggingface_hub / transformers: both read HF_HUB_OFFLINE
+# (and TRANSFORMERS_OFFLINE) at IMPORT time into module constants, so setting them inside main()
+# is too late — the first attempt at this did exactly that and the eval still spent 8m35s dying
+# on "Network is unreachable".
+#
+# Offline is the right default here: by the time a checkpoint is being evaluated its tokenizer
+# and backbone are necessarily already in the HF cache — the training that produced it could not
+# have run otherwise. Left online, the Hub is contacted to revalidate files that are already
+# local, and this pod cannot reach huggingface.co, so every call waits out a TCP timeout and
+# then fails. Parsed off sys.argv because argparse has not run yet.
+if "--online" not in sys.argv:
+    for _k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        os.environ.setdefault(_k, "1")
 
 
 def main() -> None:
@@ -36,6 +51,20 @@ def main() -> None:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--max-frames-per-episode", type=int, default=450,
                     help="cap per-episode replay length (whole episode if shorter)")
+    # Without this, a run that trained with --rename_map could never be evaluated: the
+    # checkpoint expects the RENAMED keys (observation.images.base_0_rgb …) while the dataset
+    # still has the originals (observation.images.front …), and make_policy dies with
+    # "Feature mismatch … Missing features / Extra features". That is exactly the finetune-a-
+    # pretrained-VLA case, i.e. the runs where eval matters most. lerobot-train passes the map
+    # in two places; so do we (see below).
+    ap.add_argument("--online", action="store_true",
+                    help="allow HF Hub network access (default: offline — everything needed is "
+                         "already cached, and reaching the Hub from this pod just times out)")
+    ap.add_argument("--rename-map", default=None, metavar="JSON",
+                    help='dataset->policy observation key map, same JSON as lerobot-train\'s '
+                         '--rename_map, e.g. \'{"observation.images.front": '
+                         '"observation.images.base_0_rgb"}\'. Take it from the plan\'s '
+                         "camera_rename_map.")
     ap.add_argument("--plot-dir", default=None, help="save gt-vs-pred plots here (needs matplotlib)")
     args = ap.parse_args()
 
@@ -48,6 +77,16 @@ def main() -> None:
     device = args.device if (args.device != "cuda" or torch.cuda.is_available()) else "cpu"
     if device != args.device:
         print(f"[offline_eval] CUDA unavailable -> {device}", file=sys.stderr)
+
+    rename_map = None
+    if args.rename_map:
+        try:
+            rename_map = json.loads(args.rename_map)
+        except json.JSONDecodeError as e:
+            raise SystemExit(f"--rename-map is not valid JSON: {e}") from e
+        if not isinstance(rename_map, dict):
+            raise SystemExit("--rename-map must be a JSON object of dataset_key -> policy_key")
+        print(f"[offline_eval] rename_map: {rename_map}")
 
     cfg = PreTrainedConfig.from_pretrained(args.model_path)
     cfg.pretrained_path = args.model_path
@@ -87,9 +126,16 @@ def main() -> None:
         item_iter = (dataset[i] for i in range(len(dataset)))
         n_frames = dataset.num_frames
 
-    policy = make_policy(cfg, ds_meta=ds_meta)
+    # Same two places lerobot_train.py applies it: make_policy reconciles the feature names,
+    # and the preprocessor's rename step remaps each incoming batch.
+    policy = make_policy(cfg, ds_meta=ds_meta, rename_map=rename_map)
     policy.eval()
-    preprocessor, postprocessor = make_pre_post_processors(cfg, pretrained_path=args.model_path)
+    _pp_kwargs = {}
+    if rename_map:
+        _pp_kwargs["preprocessor_overrides"] = {
+            "rename_observations_processor": {"rename_map": rename_map}}
+    preprocessor, postprocessor = make_pre_post_processors(
+        cfg, pretrained_path=args.model_path, **_pp_kwargs)
 
     print(f"[offline_eval] model={args.model_path} device={device} "
           f"episodes={eval_eps} frames={n_frames}")

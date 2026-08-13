@@ -242,18 +242,22 @@ Agent 预装了 **`robot_sft`** 技能：把一次机器人模仿学习 / VLA �
 
 - **Pod 之间开箱免密 ssh**：镜像内置一对共享密钥 + sshd，**所有由本镜像启动的 pod 天然互信**（同一镜像 ⇒ 私钥与 `authorized_keys` 配对），无需任何运行时配置，pod 重建后依然有效。`rsync` 也已预装，用于同步 checkpoint。
 - **按集群 DNS 寻址**：pod IP 每次重启都会变，因此一律用 headless DNS `<pod名>.<service名>`（如 `lerobot-console-0.lerobot-console`）作为 `--main_process_ip`，命令不随重启失效。
-- **`multinode.py` 工具**（随 `robot_sft` 一起预装），把踩过的坑固化成四个子命令：
-  - `check`——启动前的通信体检：双向可达、两端 torch/lerobot 版本一致、**数据集与模型缓存 + `HF_TOKEN` 在每个节点都就位**、GPU 数与空闲、**master 的 checkpoint 磁盘预算**、端口占用、`output_dir` 干净；
-  - `status`——启动阶段常有几分钟无输出（rendezvous + 大模型加载），它按节点报告当前阶段，把"活着但慢"与"卡死"区分开；
+- **`multinode.py` 工具**（随 `robot_sft` 一起预装），把踩过的坑固化成七个子命令。每条门禁不满足就以非零退出码返回——Agent 会照做，而不是"读到但忽略"：
+  - `check`——启动前的通信体检：双向可达、两端 torch/lerobot 版本一致、**数据集与模型缓存 + `HF_TOKEN` 在每个节点都就位**、GPU 数与空闲、**master 的 checkpoint 磁盘预算**、端口占用、`output_dir` 干净；加 `--resume` 时门禁**反转**（续训要求目录存在且带 checkpoint）；
+  - `env`——**一条命令把凭据装到所有节点的所有 shell**。值走 stdin，绝不进命令行、shell 历史或审批弹窗；写入的文件被 `/etc/profile.d`、`$BASH_ENV`、`~/.bashrc` 三处共同引用，所以登录 shell、`bash -c`、以及 `ssh host 'cmd'` 都读得到（三者读的是**不同**的钩子，少挂一个就会出现"我设了但下一条命令看不见"）。它还会注释掉 rc 文件里抢占同名变量的旧 `export`——**一个错的 token 比没有 token 更糟**：`test -n` 照样通过，然后训练跑六小时才 403。`env show` 只打印长度，不打印值；
+  - `rdma`——探测每个节点真正可用的 `NCCL_IB_HCA`。容器里 `ibv_devinfo` 能看到宿主机的所有 HCA，但只有绑在 pod 自己 ENI 上的那张有可用 GID；NCCL 选错会报 `ibv_modify_qp failed`，或者**静默回落到 TCP**（训练照跑，只是慢几倍）；
+  - `status`——启动阶段常有几分钟无输出（rendezvous + 大模型加载），它按节点报告当前阶段，把"活着但慢"与"卡死"区分开；**没有看门狗在跑时直接失败**（退出码 2）——无人监管的训练意味着没有卡死检测、没有自动续训，而这通常几小时后才被发现；
+  - `resume`——**多机续训的正确姿势**：解析 `checkpoints/last`、拒绝写了一半的 checkpoint、只把要续的那一个 step 目录 rsync 到每个 worker（pi05 单个约 9GB，整棵树是数倍）、在对端重建 `last` 软链并复验，最后打印该追加的 `--resume=true --config_path=…`；
   - `clean`——重试前清理各节点残留进程并确认显存真正释放（脱离终端的 rank 会活过失败的 run，占着显存让下一次 OOM）；
   - `launch`——以**脚本文件**方式下发各 rank 的命令（内联到 ssh 参数里会被多层 shell 吃掉引号，形如 `--dataset.episodes='[0, 1]'` 的参数会损坏并报成 YAML 错误）。
 - **启动方式**：所有节点跑**同一条命令**，只有 `--machine_rank` 不同（0 = master）；`--num_processes` 是所有节点的 GPU 总数，`batch_size` 仍是每进程的值。
 - **需要你准备的**：**数据集必须已在每个节点的相同路径上**（DDP 只切分 batch，不搬运数据），并告诉 Agent 各节点地址与每节点 GPU 数。Worker 由你手动启动（这是刻意的：看门狗只能监管本机 master 进程，远程拉起的训练会留下无人监管的孤儿进程）。
-- **checkpoint 与评估只在 master**（accelerate 只在主进程保存/记录）。因此**续训需要先把 checkpoint 同步到每个 worker 的相同路径**（`rsync`/`scp`），再各节点一起 `--resume=true` 重启——多机场景下看门狗**不会**自动重启，它会把 run 标为 `blocked` 并给出手动步骤。
+- **checkpoint 与评估只在 master**（accelerate 只在主进程保存/记录），但**续训时每个 rank 都要读 checkpoint**——没同步过的 worker 会一启动就死，而 master 看着一切正常：报错出现在没做错事的那个节点上。`multinode.py resume` 正是为此存在。多机场景下看门狗**不会**自动重启（它管不到 worker），会把 run 标为 `blocked` 并给出步骤。
+- **离线评估支持相机改名**：微调预训练 VLA 时常要用 `--rename_map` 把数据集的相机名映射到 checkpoint 期待的名字（如 `front → base_0_rgb`）。`offline_eval.py` 现在同样接受 `--rename-map`，`eval_watcher` 会自动从训练计划里带上——否则**凡是改过名的 run 都无法离线评估**，而那恰好是最需要评估的一类。评估默认只用本地缓存（`HF_HUB_OFFLINE`），不再为了校验一个本地已有的文件去等一个连不通的网络超时（实测 8m35s → 2m0s）。
 
 ```bash
 # 每个节点同一条命令，只改 --machine_rank（0=master，1,2…=worker）
-cd /lerobot && uv run accelerate launch --multi_gpu \
+cd /lerobot && accelerate launch --multi_gpu \
   --num_machines=2 --num_processes=<所有节点 GPU 总数> --machine_rank=<R> \
   --main_process_ip=<master 的 DNS 名> --main_process_port=29500 \
   $(which lerobot-train) <与单机完全相同的训练参数>

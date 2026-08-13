@@ -87,6 +87,14 @@ def eval_one(repo, ckpt_dir, plan, gpu, eval_dir, env, plot_dest, timeout,
            "--plot-dir", plot_dest]
     if plan.get("dataset_root"):
         cmd += ["--dataset-root", plan["dataset_root"]]
+    # A run trained with a camera rename must be evaluated with the same map, or make_policy
+    # rejects the dataset. plan_training.py already recorded it; passing it here means the
+    # agent never has to notice.
+    if plan.get("camera_rename_map"):
+        cmd += ["--rename-map", json.dumps(plan["camera_rename_map"])]
+    # offline_eval forces HF offline itself; set it here too so the whole child tree (and any
+    # library that reads it at import time) agrees.
+    env = {**env, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
     # Own session so we can kill the WHOLE tree on timeout — a hung eval must never block the
     # pipeline. `bash -lc` (a LOGIN shell) so offline_eval inherits HF_ENDPOINT +
     # TOS_ACCESS_KEY/SECRET_KEY — needed to stream a tos:// eval set — even when this watcher was
