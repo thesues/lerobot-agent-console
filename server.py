@@ -77,19 +77,39 @@ HERMES_SESSION_API = os.environ.get("HERMES_SESSION_API") or "/opt/hermes/sessio
 # environment: CONSOLE_USER / CONSOLE_PASSWORD (legacy aliases AUTH_USER / AUTH_PASSWORD).
 # EVERY route — page, static, WS, proxy — requires them.
 #
-# Auth is ALWAYS ON. When the env vars are missing we fall back to a well-known default and
-# warn loudly, instead of the old behaviour of disabling auth entirely: this console exposes a
-# root shell and now has a public HTTPS entry (APIG), so failing OPEN meant a single unmounted
-# Secret would silently publish it to the internet with only a log line. Failing closed on a
-# default password is recoverable; failing open is not.
-DEFAULT_AUTH_USER = "lerobot"
-DEFAULT_AUTH_PASS = "lerobot"
+# Auth is ALWAYS ON, and there is no fallback: without credentials the process REFUSES TO START.
+#
+# This has been through both weaker forms. Originally a missing Secret disabled auth entirely —
+# failing OPEN, which on a console that hands out a root shell on a GPU box, now behind a public
+# HTTPS entry (APIG), meant one unmounted Secret published it to the internet with a log line as
+# the only trace. That was replaced by a fallback to a well-known lerobot/lerobot, which fails
+# closed but only in the sense that a password printed in this repository is a password: the
+# warning is a single line in a log nobody reads while the console answers on the public
+# endpoint. Refusing to boot is the only version of this whose failure mode is visible — a pod
+# in CrashLoopBackOff gets noticed; a running one with a guessable password does not.
+#
+# Chart 0.2.0 already blocks the Helm path (install fails when auth.password is empty), so this
+# guards everything else: docker run, a hand-written manifest, someone's laptop.
 _env_user = os.environ.get("CONSOLE_USER") or os.environ.get("AUTH_USER") or ""
 _env_pass = os.environ.get("CONSOLE_PASSWORD") or os.environ.get("AUTH_PASSWORD") or ""
-AUTH_USER = _env_user or DEFAULT_AUTH_USER
-AUTH_PASS = _env_pass or DEFAULT_AUTH_PASS
-AUTH_USING_DEFAULT = not (_env_user and _env_pass)
+AUTH_USER = _env_user
+AUTH_PASS = _env_pass
 AUTH_ENABLED = True
+
+
+def _require_auth_credentials() -> None:
+    """Exit unless both credentials are present. Called from main(), not at import: importing
+    this module (tests, tooling) must not kill the interpreter."""
+    missing = [n for n, v in (("CONSOLE_USER", _env_user), ("CONSOLE_PASSWORD", _env_pass)) if not v]
+    if not missing:
+        return
+    log.error(
+        "REFUSING TO START: %s not set. This console gives shell access to a GPU node and is "
+        "normally published over HTTPS, so it must never come up without credentials. "
+        "Under Helm, set auth.user / auth.password in values.yaml (the chart refuses to install "
+        "otherwise). Running the container directly: pass -e CONSOLE_USER -e CONSOLE_PASSWORD.",
+        " and ".join(missing))
+    raise SystemExit(2)
 # The console serves plain HTTP :8080. TLS/HTTPS is terminated upstream — by APIG (the
 # API Gateway, which gives an HTTPS auto-domain + cert) or a CLB — so there is no
 # in-process cert handling here.
@@ -1323,15 +1343,8 @@ def main() -> None:
     # Always plain HTTP :8080 — TLS is terminated upstream by APIG / CLB.
     log.info("LeRobot Agent Console http://0.0.0.0:%s  shell=%s  LEROBOT_HOME=%s  hermes=%s",
              PORT, SHELL, WORKDIR, HERMES_BIN)
-    if AUTH_USING_DEFAULT:
-        log.warning(
-            "auth: using the DEFAULT credentials (user=%s) — CONSOLE_USER / CONSOLE_PASSWORD were "
-            "not injected. The console is protected, but with a password published in this "
-            "repository. Under Helm this cannot happen (the chart refuses to install without "
-            "auth.password); reaching this line means the container was started some other way. "
-            "Set the env vars and restart before exposing it.", AUTH_USER)
-    else:
-        log.info("auth: single-user HTTP Basic ENABLED (user=%s)", AUTH_USER)
+    _require_auth_credentials()
+    log.info("auth: single-user HTTP Basic ENABLED (user=%s)", AUTH_USER)
     web.run_app(build_app(), host="0.0.0.0", port=PORT, access_log=None)
 
 
