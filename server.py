@@ -1326,8 +1326,10 @@ def main() -> None:
     if AUTH_USING_DEFAULT:
         log.warning(
             "auth: using the DEFAULT credentials (user=%s) — CONSOLE_USER / CONSOLE_PASSWORD were "
-            "not injected. The console is protected but with a PUBLICLY KNOWN password; set the "
-            "env vars (k8s Secret lerobot-console-auth) and restart.", AUTH_USER)
+            "not injected. The console is protected, but with a password published in this "
+            "repository. Under Helm this cannot happen (the chart refuses to install without "
+            "auth.password); reaching this line means the container was started some other way. "
+            "Set the env vars and restart before exposing it.", AUTH_USER)
     else:
         log.info("auth: single-user HTTP Basic ENABLED (user=%s)", AUTH_USER)
     web.run_app(build_app(), host="0.0.0.0", port=PORT, access_log=None)
