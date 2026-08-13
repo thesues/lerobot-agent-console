@@ -174,10 +174,17 @@ def main() -> None:
                     help="checkpoint dir; default <artifact_root>/runs/<policy>_<ts> (big disk)")
     ap.add_argument("--repo", default="/lerobot" if os.path.isdir("/lerobot") else ".",
                     help="lerobot checkout to run from (uv venv lives there)")
-    ap.add_argument("--runner", default="uv",
+    # Default is python-module, NOT uv. SKILL.md says in so many words "Do NOT use
+    # `uv run lerobot-train` — uv run triggers multi-process issues in this environment", and
+    # the default used to emit exactly that, into training_plan.json, for the agent to copy.
+    # Same shape as the launch_command problem: the tooling handed over the form the docs forbid,
+    # so that is the form that got run. A rule the default violates is not a rule.
+    ap.add_argument("--runner", default="python-module",
                     choices=["uv", "python-module"],
-                    help="command runner: 'uv' → 'uv run lerobot-train', "
-                         "'python-module' → 'python -u -m lerobot.scripts.lerobot_train'")
+                    help="command runner: 'python-module' (default) → "
+                         "'python -u -m lerobot.scripts.lerobot_train'; "
+                         "'uv' → 'uv run lerobot-train' (multi-process issues here — opt in only "
+                         "if you know this environment differs)")
     ap.add_argument("--float8", action="store_true",
                     help="fp8 training via NVIDIA TransformerEngine (te.LayerNormMLP) for the VLM "
                          "MLP layers. pi0/pi05 ONLY — appends --policy.vlm_mlp_fp8_enable=true "
