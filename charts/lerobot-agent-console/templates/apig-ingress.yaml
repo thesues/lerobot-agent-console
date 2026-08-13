@@ -31,11 +31,17 @@ spec:
   common:
     network:
       subnetIds: {{- toYaml .Values.apig.subnetIds | nindent 8 }}
-    resource:
-      replicas: {{ .Values.apig.replicas }}
-      instanceSpecCode: {{ .Values.apig.instanceSpecCode | quote }}
-      clbSpecCode: {{ .Values.apig.clbSpecCode | quote }}
-      publicNetworkBillingType: {{ .Values.apig.publicNetworkBillingType | quote }}
+    {{- /* Emitted only for the fields actually set. spec.common.resource.* is optional, and
+           omitting it lets the operator provision with platform defaults — sending a fixed
+           `1c2g` / `small_1` instead pins you to spec codes that can be retired. */}}
+    {{- $r := dict }}
+    {{- with .Values.apig.replicas }}{{ $_ := set $r "replicas" (int .) }}{{ end }}
+    {{- with .Values.apig.instanceSpecCode }}{{ $_ := set $r "instanceSpecCode" . }}{{ end }}
+    {{- with .Values.apig.clbSpecCode }}{{ $_ := set $r "clbSpecCode" . }}{{ end }}
+    {{- with .Values.apig.publicNetworkBillingType }}{{ $_ := set $r "publicNetworkBillingType" . }}{{ end }}
+    {{- with $r }}
+    resource: {{- toYaml . | nindent 6 }}
+    {{- end }}
   {{- else }}
   id: {{ .Values.apig.existingId | quote }}
   {{- end }}

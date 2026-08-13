@@ -89,10 +89,17 @@ apig:
   existingId: ""                  # create=false: the gateway's instance id
   instanceName: ""                # create=true: gateway name (default: <release>-apig)
   subnetIds: []                   # create=true: REQUIRED
-  replicas: 2
-  instanceSpecCode: 1c2g
-  clbSpecCode: small_1
-  publicNetworkBillingType: traffic
+
+  # Gateway sizing. ALL OPTIONAL, and empty means "let the platform choose" — which is the right
+  # default and how our own test gateway was actually created. (The values that appear in
+  # `kubectl get apiginstance -o yaml` afterwards are the platform's answer, not our input; an
+  # earlier version of this chart copied them back in as if they were settings. Pinning them
+  # freezes you on spec codes that the platform is free to retire, and `replicas` is billed.)
+  # Fill in only what you deliberately want to control.
+  replicas: ""                    # gateway replicas — more than one is HA, and costs it
+  instanceSpecCode: ""            # e.g. 1c2g
+  clbSpecCode: ""                 # e.g. small_1
+  publicNetworkBillingType: ""    # e.g. traffic
 
   ingressName: ""                 # default: <release>-apig
   # One gateway per ingress class: pointing two consoles at the same class routes them to one
