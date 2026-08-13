@@ -6,7 +6,12 @@
 # releases, and the resource name determines the PVC name (hermes-home-<name>-0) and the pod
 # DNS the multi-node training addresses. Changing it strands the old disk and creates an empty
 # one, so it must never drift by accident.
-nameOverride: lerobot-agent-console
+# Resource names come from the RELEASE name. Pinning a literal here — which this chart used to
+# do — means every install produces the same names no matter what you call the release, so a
+# second copy collides with the first ("invalid ownership metadata") and the chart can only ever
+# exist once per namespace. Our own releases are already named for what they deploy
+# (lerobot-agent-console, lerobot-agent-console-test), so the rendered names are unchanged.
+nameOverride: ""
 
 image:
   repository: iaas-us-cn-beijing.cr.volces.com/physicalai/lerobot-agent-console
